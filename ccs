@@ -6,36 +6,46 @@ import curses
 import json
 import os
 import re
+import shlex
+import shutil
 import subprocess
+import tempfile
+import textwrap
 import time
 from pathlib import Path
 
 HOME = str(Path.home())
 PROJECTS = Path.home() / ".claude" / "projects"
 CACHE = Path.home() / ".cache" / "ccs-index.json"
-CWD_RE = re.compile(rb'"cwd":"((?:[^"\\]|\\.)*)"')
-INDEX_VERSION = 2
-META_MARKERS = (b'"type":"custom-title"', b'"type":"ai-title"', b'"type":"agent-name"',
-                b'"type":"last-prompt"', b'"type":"cost-state"')
+CWD_RE = re.compile(rb'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"')
+INDEX_VERSION = 3
+# Common age filters; 0 includes all saved transcripts.
+WINDOWS = (1, 3, 7, 30, 0)
+# Above either limit a closed session asks whether to resume it or start clean in its folder.
+LARGE_PROMPTS = 20
+LARGE_COST = 20.0
+META_RE = re.compile(rb'"(?:type|subtype)"\s*:\s*"(?:custom-title|ai-title|agent-name|last-prompt|cost-state|away_summary|user)"')
 META_KEYS = ("title", "name", "recap", "last", "turns", "cost", "prompts")
 
 FOCUS_TAB = '''
 on run argv
- set wanted to item 1 of argv
  tell application "Terminal"
-   repeat with w in windows
-     try
-       set wtabs to tabs of w
-     on error
-       set wtabs to {}
-     end try
-     repeat with t in wtabs
-       if tty of t is wanted then
-         set selected of t to true
-         set index of w to 1
-         activate
-         return "ok"
-       end if
+   repeat with candidate in argv
+     set wanted to contents of candidate
+     repeat with w in windows
+       try
+         set wtabs to tabs of w
+       on error
+         set wtabs to {}
+       end try
+       repeat with t in wtabs
+         if tty of t is wanted then
+           set selected of t to true
+           set index of w to 1
+           activate
+           return "ok"
+         end if
+       end repeat
      end repeat
    end repeat
  end tell
@@ -54,96 +64,154 @@ end run
 
 
 def open_sessions():
+    """Running sessions by id, or None when Claude Code could not list them."""
     try:
-        out = subprocess.run(["claude", "agents", "--json"], capture_output=True, text=True, timeout=15).stdout
-        return {s["sessionId"]: s for s in json.loads(out)}
-    except (OSError, ValueError, KeyError, subprocess.TimeoutExpired):
-        return {}
+        result = subprocess.run(["claude", "agents", "--json"], capture_output=True, text=True, timeout=15)
+        if result.returncode:
+            return None
+        records = json.loads(result.stdout)
+        if not isinstance(records, list) or any(
+            not isinstance(s, dict) or not isinstance(s.get("sessionId"), str) for s in records
+        ):
+            return None
+        return {s["sessionId"]: s for s in records}
+    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
+        return None
+
+
+def clean_text(value):
+    if not isinstance(value, str):
+        return ""
+    return " ".join("".join(c for c in value if c.isprintable() or c.isspace()).split())
 
 
 def prompt_text(rec):
-    content = (rec.get("message") or {}).get("content")
+    message = rec.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
     if isinstance(content, list):
         content = next((c.get("text") for c in content if isinstance(c, dict) and c.get("type") == "text"), None)
     if isinstance(content, str) and content.strip() and not content.lstrip().startswith("<"):
-        return " ".join(content.split())
+        return clean_text(content)
     return None
 
 
 def scan_transcript(path):
     cwd = custom = ai = name = recap = last = cost = None
-    prompts = []
+    prompts, turns, excerpt_size = [], 0, 0
     with open(path, "rb") as f:
         for raw in f:
             if cwd is None:
                 m = CWD_RE.search(raw)
                 if m:
-                    cwd = json.loads(b'"' + m.group(1) + b'"')
-            head = raw[:200]
-            small = any(k in head for k in META_MARKERS) or b'"subtype":"away_summary"' in raw[:400]
+                    try:
+                        cwd = json.loads(b'"' + m.group(1) + b'"')
+                    except ValueError:
+                        pass
+            small = META_RE.search(raw[:400])
             if not small and b'"turnOrigin":"human"' not in raw:
                 continue
             try:
                 rec = json.loads(raw)
             except ValueError:
                 continue
+            if not isinstance(rec, dict):
+                continue
             t = rec.get("type")
             if t == "custom-title":
-                custom = rec.get("customTitle") or custom
+                custom = clean_text(rec.get("customTitle")) or custom
             elif t == "ai-title":
-                ai = rec.get("aiTitle") or ai
+                ai = clean_text(rec.get("aiTitle")) or ai
             elif t == "agent-name":
-                name = rec.get("agentName") or name
+                name = clean_text(rec.get("agentName")) or name
             elif t == "last-prompt":
-                last = rec.get("lastPrompt") or last
+                last = clean_text(rec.get("lastPrompt")) or last
             elif t == "cost-state":
-                cost = rec.get("totalCostUSD", cost)
+                value = rec.get("totalCostUSD")
+                if isinstance(value, (float, int)) and 0 <= value < float("inf"):
+                    cost = value
             elif rec.get("subtype") == "away_summary":
-                recap = rec.get("content") or recap
-            elif t == "user":
+                recap = clean_text(rec.get("content")) or recap
+            elif t == "user" and not rec.get("isMeta") and not rec.get("isCompactSummary"):
                 text = prompt_text(rec)
                 if text:
-                    prompts.append(text[:300])
+                    turns += 1
+                    last = text
+                    if excerpt_size < 4000:
+                        excerpt = text[:min(300, 4000 - excerpt_size)]
+                        prompts.append(excerpt)
+                        excerpt_size += len(excerpt) + 1
     return {
         "v": INDEX_VERSION, "cwd": cwd, "title": custom or ai or (prompts[0] if prompts else ""),
         "name": name, "recap": " ".join((recap or "").split()), "last": " ".join((last or "").split()),
-        "turns": len(prompts), "cost": cost, "prompts": " ".join(prompts)[:4000],
+        "turns": turns, "cost": cost, "prompts": " ".join(prompts)[:4000],
     }
 
 
 def load_index(days):
+    dirty = False
     try:
         cache = json.loads(CACHE.read_text())
     except (OSError, ValueError):
         cache = {}
+        dirty = True
+    if not isinstance(cache, dict):
+        cache = {}
+        dirty = True
     cutoff = time.time() - days * 86400 if days else 0
-    fresh, sessions = {}, {}
+    fresh, sessions, seen = {}, {}, set()
     for path in PROJECTS.glob("*/*.jsonl"):
-        st = path.stat()
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        seen.add(str(path))
         if st.st_mtime < cutoff:
             continue
         key = str(path)
         entry = cache.get(key)
-        if (not entry or entry.get("v") != INDEX_VERSION
-                or entry["mtime"] != st.st_mtime or entry["size"] != st.st_size):
-            entry = {"mtime": st.st_mtime, "size": st.st_size, **scan_transcript(path)}
+        if (not isinstance(entry, dict) or entry.get("v") != INDEX_VERSION
+                or entry.get("mtime") != st.st_mtime or entry.get("size") != st.st_size
+                or not all(k in entry for k in ("cwd", *META_KEYS))):
+            try:
+                entry = {"mtime": st.st_mtime, "size": st.st_size, **scan_transcript(path)}
+            except OSError:
+                continue
         fresh[key] = entry
         if entry["cwd"]:
             sessions[path.stem] = {"id": path.stem, "cwd": entry["cwd"], "mtime": st.st_mtime,
                                    **{k: entry[k] for k in META_KEYS}}
-    CACHE.parent.mkdir(parents=True, exist_ok=True)
-    CACHE.write_text(json.dumps({**{k: v for k, v in cache.items() if v.get("v") == INDEX_VERSION}, **fresh}))
+    # Concurrent picker/CLI refreshes must never see a partially written cache.
+    try:
+        CACHE.parent.mkdir(parents=True, exist_ok=True)
+        saved = {k: v for k, v in cache.items()
+                 if k in seen and isinstance(v, dict) and v.get("v") == INDEX_VERSION}
+        updated = {**saved, **fresh}
+        if dirty or updated != cache:
+            with tempfile.NamedTemporaryFile(mode="w", dir=CACHE.parent, delete=False) as f:
+                temporary = Path(f.name)
+                try:
+                    json.dump(updated, f)
+                    f.close()
+                    temporary.replace(CACHE)
+                finally:
+                    temporary.unlink(missing_ok=True)
+    except OSError:
+        pass  # A read-only cache must not prevent browsing sessions.
     return sessions
 
 
 def collect(days):
     sessions = load_index(days)
-    for sid, live in open_sessions().items():
+    running = open_sessions()
+    for sid, live in (running or {}).items():
         s = sessions.setdefault(sid, {"id": sid, "cwd": live.get("cwd", ""), "mtime": live.get("startedAt", 0) / 1000,
                                       "title": "", "name": None, "recap": "", "last": "", "turns": 0,
                                       "cost": None, "prompts": ""})
         s["live"] = live
         s["name"] = live.get("name") or s["name"]
+    if running is None:
+        for s in sessions.values():
+            s["unknown"] = True
     return list(sessions.values())
 
 
@@ -157,6 +225,11 @@ def age(ts):
         if d >= secs:
             return f"{int(d // secs)}{unit}"
     return "now"
+
+
+def ago(ts):
+    a = age(ts)
+    return "just now" if a == "now" else f"{a} ago"
 
 
 def matches(s, q):
@@ -185,105 +258,282 @@ def build_rows(sessions, query, recent=False):
     return rows
 
 
-def session_label(s):
-    live = s.get("live")
-    mark, state = ("●", live.get("status", "open")) if live else ("○", "closed")
-    name = f"[{s['name']}] " if s["name"] else ""
-    return mark, f"{mark} {state:<7} {age(s['mtime']):>4}  {name}{s['title'] or s['id'][:8]}"
+def state(s):
+    if s.get("live"):
+        return s["live"].get("status", "open")
+    return "unknown" if s.get("unknown") else "closed"
+
+
+def is_large(s):
+    return state(s) == "closed" and (s["turns"] >= LARGE_PROMPTS or (s["cost"] or 0) >= LARGE_COST)
+
+
+def weight(s):
+    cost = f"${s['cost']:.0f}" if s["cost"] else ""
+    return f"{s['turns']:>3}p {cost:>5} {age(s['mtime']):>4}"
+
+
+def row_parts(r):
+    s = r["session"]
+    st = state(s)
+    mark = {"closed": "○", "unknown": "?"}.get(st, "●")
+    left = f"{'  ' * r['depth']}{mark} {s['title'] or s['id'][:8]}"
+    extras = [st if st not in ("idle", "closed", "unknown") else "",
+              f"[{s['name']}]" if s["name"] and s["name"] != s["title"] else "", r.get("dir", "")]
+    return left, " · ".join(e for e in extras if e), weight(s)
 
 
 def detail_lines(s, width):
+    recap = textwrap.wrap(s["recap"] or "(no recap saved for this session)", max(width, 10))[:2]
     stats = [f"{s['turns']} prompts"]
     if s["cost"]:
         stats.append(f"${s['cost']:.2f}")
-    stats.append(f"resume id {s['id']}")
-    recap = s["recap"] or "(no recap saved for this session)"
-    return [
-        f"recap: {recap}"[:width * 2],
-        f"last prompt: {s['last'] or '-'}",
-        " · ".join(stats),
-    ]
+    stats += [f"active {ago(s['mtime'])}", short(s["cwd"]), f"id {s['id']}"]
+    return recap + [""] * (2 - len(recap)), f"last prompt: {s['last'] or '-'}", " · ".join(stats)
 
 
-def activate(s):
-    live = s.get("live")
+def run_in_terminal(cmd):
+    res = subprocess.run(["osascript", "-", cmd], input=RUN_IN_NEW_WINDOW, capture_output=True, text=True, timeout=15)
+    return res.stderr.strip() or "Could not open Terminal.app." if res.returncode else None
+
+
+def candidate_ttys(s, live):
+    """Terminals that may show a running session, most specific first: `claude attach` viewers of it,
+    then the terminals of its process and its parents. A background session runs on an internal
+    terminal under a host process, so the tab that started it is found among the parents."""
+    out = subprocess.run(["ps", "-axo", "pid=,ppid=,tty=,command="], capture_output=True, text=True, timeout=5).stdout
+    procs = {}
+    for line in out.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
+            procs[int(parts[0])] = (int(parts[1]), parts[2], parts[3] if len(parts) > 3 else "")
+    keys = [k for k in (s["id"], live.get("id"), live.get("name")) if k]
+    ttys = []
+    for _, tty, cmd in procs.values():
+        match = re.search(r"(?:^|/)claude attach (.+)$", cmd)
+        if not match:
+            continue
+        target = match.group(1)
+        try:
+            args = shlex.split(target)
+        except ValueError:
+            args = []
+        if target in keys or (args and args[0] in keys):
+            ttys.append(tty)
+    pid, seen = live.get("pid"), set()
+    while pid in procs and pid not in seen:
+        seen.add(pid)
+        pid, tty, _ = procs[pid]
+        ttys.append(tty)
+    return [t for t in dict.fromkeys(ttys) if t and t != "??"]
+
+
+def activate(s, fresh=False):
     try:
-        if live and live.get("kind") == "interactive" and live.get("pid"):
-            tty = subprocess.run(["ps", "-o", "tty=", "-p", str(live["pid"])], capture_output=True, text=True).stdout.strip()
-            if tty and tty != "??":
-                res = subprocess.run(["osascript", "-", "/dev/" + tty], input=FOCUS_TAB, capture_output=True, text=True)
+        if fresh:
+            return run_in_terminal(f"cd {sh_quote(s['cwd'])} && claude")
+        live = s.get("live")
+        if not live:
+            # The list on screen can be stale; resuming a session that is already running would run it twice.
+            running = open_sessions()
+            if running is None:
+                return "Cannot tell whether this session is still open (claude agents --json failed), so it was not resumed."
+            live = running.get(s["id"])
+        if live:
+            ttys = candidate_ttys(s, live)
+            if ttys:
+                res = subprocess.run(["osascript", "-", *("/dev/" + t for t in ttys)], input=FOCUS_TAB,
+                                     capture_output=True, text=True, timeout=15)
                 if res.stdout.strip() == "ok":
                     return None
-            return "Window not found in Terminal.app (it may run in another terminal app)."
-        if live:
-            cmd = f"claude attach {sh_quote(live.get('name') or s['id'])}"
-        else:
-            cmd = f"cd {sh_quote(s['cwd'])} && claude --resume {sh_quote(s['id'])}"
-        res = subprocess.run(["osascript", "-", cmd], input=RUN_IN_NEW_WINDOW, capture_output=True, text=True)
-        if res.returncode:
-            return res.stderr.strip() or "Could not open Terminal.app."
+            if live.get("kind") == "interactive":
+                return "Window not found in Terminal.app (it may run in another terminal app)."
+            return run_in_terminal(f"claude attach {sh_quote(live.get('name') or s['id'])}")
+        return run_in_terminal(f"cd {sh_quote(s['cwd'])} && claude --resume {sh_quote(s['id'])}")
     except OSError as exc:
         return str(exc)
-    return None
+    except subprocess.TimeoutExpired:
+        return "Terminal activation timed out. Try again."
+
+
+def activate_by_id(sid, fresh=False):
+    found = next((s for s in collect(0) if s["id"] == sid), None)
+    return activate(found, fresh) if found else f"No Claude Code session with id {sid}."
+
+
+def to_json(sessions):
+    return [{
+        "id": s["id"], "dir": short(s["cwd"]), "title": s["title"], "name": s["name"],
+        "status": state(s), "age": age(s["mtime"]), "mtime": int(s["mtime"]), "recap": s["recap"],
+        "last": s["last"], "turns": s["turns"], "cost": s["cost"], "large": is_large(s),
+    } for s in sorted(sessions, key=lambda s: -s["mtime"])]
 
 
 def sh_quote(text):
     return "'" + text.replace("'", "'\\''") + "'"
 
 
-def row_text(r):
-    text = session_label(r["session"])[1]
-    return f"{text}  · {r['dir']}" if "dir" in r else text
+def cycle_window(days, step):
+    order = sorted(set(WINDOWS) | {days}, key=lambda d: d or float("inf"))
+    return order[(order.index(days) + step) % len(order)]
 
 
-def ui(stdscr, days, recent):
+def index_of(rows, selectable, sid, fallback):
+    ids = [rows[i]["session"]["id"] for i in selectable]
+    return ids.index(sid) if sid in ids else fallback
+
+
+def put(win, y, x, text, limit, attr=0):
+    h, w = win.getmaxyx()
+    if x < 0:
+        text, limit, x = text[-x:], limit + x, 0
+    if y < 0 or y >= h or x >= w:
+        return x
+    limit = min(limit, w - x - (1 if y == h - 1 else 0))
+    if limit > 0 and text:
+        try:
+            win.addnstr(y, x, text, limit, attr)
+        except curses.error:
+            pass  # A resize or a wide Unicode character can reach the right edge.
+        return x + min(len(text), limit)
+    return x
+
+
+def draw_row(win, y, w, r, selected, colors):
+    s = r["session"]
+    st = state(s)
+    depth = min(r["depth"], max(0, (w - 26) // 4))
+    left, extras, right = row_parts({**r, "depth": depth})
+    if w < 30:
+        right = ""
+    base = curses.A_REVERSE if selected else 0
+    room = w - len(right) - 2
+    put(win, y, 0, " " * (w - 1), w - 1, base)
+    x = put(win, y, 1, left, room - 1, base | (curses.A_DIM if st in ("closed", "unknown") else 0))
+    put(win, y, x + 2, extras, room - x - 2, base | curses.A_DIM)
+    put(win, y, w - len(right) - 1, right, len(right), base | (colors["large"] if is_large(s) else curses.A_DIM))
+    mark_x = 1 + 2 * depth
+    put(win, y, mark_x, left[mark_x - 1], 1, base | colors.get(st, colors["busy"]))
+
+
+def draw_header(win, w, sessions, recent, days, watch):
+    live_n = sum(1 for s in sessions if s.get("live"))
+    unknown_n = sum(1 for s in sessions if s.get("unknown"))
+    x = put(win, 0, 1, "Claude sessions", w - 2, curses.A_BOLD)
+    counts = f"{live_n} open · {len(sessions) - live_n - unknown_n} closed"
+    if unknown_n:
+        counts += f" · {unknown_n} unknown"
+    x = put(win, 0, x + 2, counts, w - x - 3)
+    x += 3
+    for label, on in (("Recent", recent), ("Folders", not recent)):
+        x = put(win, 0, x, f" {label} ", w - x - 1, curses.A_REVERSE if on else curses.A_DIM)
+    x += 2
+    for d in sorted(set(WINDOWS) | {days}, key=lambda d: d or float("inf")):
+        x = put(win, 0, x, f" {d}d " if d else " all ", w - x - 1, curses.A_REVERSE if d == days else curses.A_DIM)
+    if watch:
+        put(win, 0, x + 2, f"refresh {watch}s", w - x - 3, curses.A_DIM)
+
+
+def confirm_large(stdscr, s, colors):
+    cost = f" · ${s['cost']:.0f}" if s["cost"] else ""
+    lines = [f"Large session: {s['turns']} prompts{cost} · last active {ago(s['mtime'])}",
+             "Resuming carries its whole conversation into every new prompt.",
+             f"A clean session starts empty in {short(s['cwd'])}."]
+    choices = (("fresh", "Start clean here"), ("resume", "Resume"))
+    stdscr.timeout(-1)
+    pick = 0
+    while True:
+        h, w = stdscr.getmaxyx()
+        stdscr.erase()
+        for i, line in enumerate(lines):
+            if i < h - 4:
+                put(stdscr, i, 1, line, w - 2, colors["large"] if i == 0 else 0)
+        for i, (_, label) in enumerate(choices):
+            put(stdscr, h - 3 + i, 1, f" {label} ", w - 2, curses.A_REVERSE if i == pick else 0)
+        put(stdscr, h - 1, 1, "←→ choose · Enter confirm · n clean · r resume · Esc cancel", w - 2, curses.A_DIM)
+        stdscr.refresh()
+        key = stdscr.get_wch()
+        if key in (curses.KEY_LEFT, curses.KEY_RIGHT, "\t"):
+            pick = 1 - pick
+        elif key in ("\n", "\r", curses.KEY_ENTER):
+            return choices[pick][0]
+        elif key in ("n", "N"):
+            return "fresh"
+        elif key in ("r", "R"):
+            return "resume"
+        elif key == "\x1b":
+            return None
+
+
+def ui(stdscr, days, recent, watch=0):
     curses.curs_set(0)
     curses.use_default_colors()
-    for i, c in enumerate((curses.COLOR_GREEN, curses.COLOR_YELLOW, curses.COLOR_CYAN), start=1):
+    for i, c in enumerate((curses.COLOR_GREEN, curses.COLOR_YELLOW, curses.COLOR_CYAN, curses.COLOR_MAGENTA), start=1):
         curses.init_pair(i, c, -1)
-    sessions, query, sel, top, msg = collect(days), "", 0, 0, ""
+    colors = {"idle": curses.color_pair(1), "busy": curses.color_pair(2) | curses.A_BOLD,
+              "dir": curses.color_pair(3), "large": curses.color_pair(4) | curses.A_BOLD,
+              "closed": curses.A_DIM, "unknown": curses.color_pair(4)}
+    sessions, query, sel, top, msg, keep = collect(days), "", 0, 0, "", None
+    rows, cur = [], -1
+    next_refresh = time.monotonic() + watch
     while True:
+        if watch and time.monotonic() >= next_refresh:
+            keep = rows[cur]["session"]["id"] if cur >= 0 else None
+            sessions = collect(days)
+            next_refresh = time.monotonic() + watch
+        stdscr.timeout(max(1, int((next_refresh - time.monotonic()) * 1000)) if watch else -1)
         rows = build_rows(sessions, query, recent)
         selectable = [i for i, r in enumerate(rows) if r["kind"] == "session"]
+        if keep:
+            sel, keep = index_of(rows, selectable, keep, sel), None
         sel = min(sel, max(len(selectable) - 1, 0))
-        h, w = stdscr.getmaxyx()
-        panel = h >= 14
-        body = h - 8 if panel else h - 3
         cur = selectable[sel] if selectable else -1
+        h, w = stdscr.getmaxyx()
+        if h < 6 or w < 12:
+            stdscr.erase()
+            put(stdscr, 0, 0, "Resize terminal", w - 1)
+            stdscr.refresh()
+            try:
+                stdscr.get_wch()
+            except curses.error:
+                pass
+            continue
+        panel = h >= 16
+        body = h - 9 if panel else h - 4
         if cur >= 0:
             top = min(max(top, cur - body + 1), cur)
         stdscr.erase()
-        live_n = sum(1 for s in sessions if s.get("live"))
-        header = (f" Claude sessions  {live_n} open · {len(sessions) - live_n} closed"
-                  + (f" · last {days}d" if days else "") + (" · most recent first" if recent else " · by folder"))
-        stdscr.addnstr(0, 0, header, w - 1, curses.A_BOLD)
-        for y, r in enumerate(rows[top:top + body], start=1):
-            indent = "  " * r["depth"]
+        draw_header(stdscr, w, sessions, recent, days, watch)
+        for y, r in enumerate(rows[top:top + body], start=2):
             if r["kind"] == "dir":
-                stdscr.addnstr(y, 0, indent + r["label"], w - 1, curses.color_pair(3))
-                continue
-            s = r["session"]
-            text = row_text(r)
-            attr = curses.A_REVERSE if top + y - 1 == cur else 0
-            if s.get("live"):
-                attr |= curses.color_pair(1 if s["live"].get("status") == "idle" else 2)
+                put(stdscr, y, 1 + 2 * r["depth"], r["label"], w - 2 - 2 * r["depth"], colors["dir"])
             else:
-                attr |= curses.A_DIM
-            stdscr.addnstr(y, 0, indent + text, w - 1, attr)
+                draw_row(stdscr, y, w, r, top + y - 2 == cur, colors)
+        if not rows:
+            put(stdscr, 3, 3, "No sessions match. Esc clears the search; ←→ widens the date range.", w - 4, curses.A_DIM)
         if panel and cur >= 0:
-            stdscr.hline(h - 7, 0, curses.ACS_HLINE, w)
-            recap, last, stats = detail_lines(rows[cur]["session"], w - 2)
-            stdscr.addnstr(h - 6, 1, recap[:w - 2], w - 2)
-            stdscr.addnstr(h - 5, 1, recap[w - 2:], w - 2)
-            stdscr.addnstr(h - 4, 1, last, w - 2, curses.A_DIM)
-            stdscr.addnstr(h - 3, 1, stats, w - 2, curses.A_DIM)
-        footer = msg or ("↑↓ move · Enter switch/resume · Tab folder/recent view · "
-                         "type to search titles, prompts, recaps · Esc clear · ^R refresh · ^C quit")
-        stdscr.addnstr(h - 2, 0, f" filter: {query}", w - 1, curses.A_BOLD)
-        stdscr.addnstr(h - 1, 0, " " + footer, w - 1, curses.A_DIM)
+            s = rows[cur]["session"]
+            put(stdscr, h - 7, 0, "─" * w, w - 1, curses.A_DIM)
+            recap, last, stats = detail_lines(s, w - 4)
+            put(stdscr, h - 6, 2, recap[0], w - 4)
+            put(stdscr, h - 5, 2, recap[1], w - 4)
+            put(stdscr, h - 4, 2, last, w - 4, curses.A_DIM)
+            x = put(stdscr, h - 3, 2, "large session · " if is_large(s) else "", w - 4, colors["large"])
+            put(stdscr, h - 3, x, stats, w - x - 2, curses.A_DIM)
+        x = put(stdscr, h - 2, 1, "Search: ", w - 2, curses.A_BOLD)
+        put(stdscr, h - 2, x, query or "type to filter titles, names, folders, prompts, recaps",
+            w - x - 1, 0 if query else curses.A_DIM)
+        if any(s.get("unknown") for s in sessions):
+            msg = msg or "Open/closed status unavailable (claude agents --json failed): resuming is disabled."
+        footer = msg or ("↵ open · ^O new here · Tab recent/folders · ←→ range · "
+                         "Esc clear search · ^R refresh · ^C quit")
+        put(stdscr, h - 1, 1, footer, w - 2, colors["large"] if msg else curses.A_DIM)
         stdscr.refresh()
         msg = ""
-        key = stdscr.get_wch()
+        try:
+            key = stdscr.get_wch()
+        except curses.error:
+            continue
         if key in (curses.KEY_UP, "\x10"):
             sel = max(sel - 1, 0)
         elif key in (curses.KEY_DOWN, "\x0e"):
@@ -292,15 +542,26 @@ def ui(stdscr, days, recent):
             sel = max(sel - body, 0)
         elif key == curses.KEY_NPAGE:
             sel = min(sel + body, max(len(selectable) - 1, 0))
-        elif key in ("\n", "\r", curses.KEY_ENTER) and selectable:
-            msg = activate(rows[cur]["session"])
-            if not msg:
-                return
+        elif key == curses.KEY_HOME:
+            sel = 0
+        elif key == curses.KEY_END:
+            sel = max(len(selectable) - 1, 0)
+        elif key in ("\n", "\r", curses.KEY_ENTER, "\x0f") and selectable:
+            s = rows[cur]["session"]
+            choice = "fresh" if key == "\x0f" else confirm_large(stdscr, s, colors) if is_large(s) else "resume"
+            if choice:
+                msg = activate(s, fresh=choice == "fresh")
+                if not msg and not watch:
+                    return
         elif key == "\x1b":
             query, sel = "", 0
         elif key in (curses.KEY_BACKSPACE, "\x7f", "\b"):
             query = query[:-1]
+        elif key in (curses.KEY_LEFT, curses.KEY_RIGHT):
+            days = cycle_window(days, 1 if key == curses.KEY_RIGHT else -1)
+            sessions, sel, top = collect(days), 0, 0
         elif key == "\x12":
+            keep = rows[cur]["session"]["id"] if cur >= 0 else None
             sessions = collect(days)
         elif key == "\t":
             recent, sel, top = not recent, 0, 0
@@ -310,24 +571,76 @@ def ui(stdscr, days, recent):
 
 def print_tree(days, recent):
     for r in build_rows(collect(days), "", recent):
-        indent = "  " * r["depth"]
-        print(indent + (r["label"] if r["kind"] == "dir" else row_text(r)))
+        if r["kind"] == "dir":
+            print("  " * r["depth"] + r["label"])
+        else:
+            left, extras, right = row_parts(r)
+            print("  ".join(part for part in (left, extras, " ".join(right.split())) if part))
+
+
+def install_hotkey():
+    """Install the bundled optional picker without duplicating the user's init entry."""
+    script = Path(__file__).resolve()
+    candidates = (script.parent / "hammerspoon" / "ccs.lua",
+                  script.parent.parent / "share" / "ccs" / "hammerspoon" / "ccs.lua")
+    source = next((path for path in candidates if path.is_file()), None)
+    if source is None:
+        raise OSError("Hotkey module is missing. Reinstall ccs with the current installer or Homebrew formula.")
+    directory = Path.home() / ".hammerspoon"
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / "ccs.lua"
+    if target.is_file() and target.read_bytes() != source.read_bytes():
+        shutil.copy2(target, directory / f"ccs.lua.backup-{time.time_ns()}")
+    if source != target:
+        shutil.copy2(source, target)
+    init = directory / "init.lua"
+    original = init.read_text() if init.exists() else ""
+    active = "\n".join(line for line in original.splitlines() if not line.lstrip().startswith("--"))
+    if not re.search(r'require\s*\(?\s*["\']ccs["\']', active):
+        if init.exists():
+            shutil.copy2(init, directory / f"init.lua.backup-{time.time_ns()}")
+        init.write_text(original.rstrip() + '\n\n-- ccs session picker\nrequire("ccs").start()\n')
+    print("Hotkey configured. Open Hammerspoon and choose Reload Config, then press Option-Space.")
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--days", type=int, default=14, help="hide closed sessions older than this (0 = all)")
+    p.add_argument("--days", type=int, default=7,
+                   help="hide closed sessions older than this (0 = all); Left/Right change it in the picker")
     p.add_argument("--list", action="store_true", help="print the tree and exit")
     p.add_argument("-r", "--recent", action="store_true", help="start with the most recent first instead of by folder")
+    p.add_argument("-w", "--watch", type=int, nargs="?", const=5, default=0, metavar="SECONDS",
+                   help="stay open after Enter and refresh every SECONDS (default 5) for use as a side panel")
+    p.add_argument("--json", action="store_true", help="print sessions as JSON, most recent first, and exit")
+    p.add_argument("--activate", metavar="ID", help="switch to, attach or resume the session with this id, and exit")
+    p.add_argument("--fresh", action="store_true", help="with --activate: start a new session in that session's folder")
+    p.add_argument("--install-hotkey", action="store_true", help="install and configure the optional Hammerspoon picker")
     args = p.parse_args()
     if args.days < 0:
         p.error("--days must be zero or greater")
-    if args.list:
+    if args.watch < 0:
+        p.error("--watch must be zero or greater")
+    if args.fresh and not args.activate:
+        p.error("--fresh requires --activate")
+    if sum(bool(value) for value in (args.activate, args.json, args.list, args.install_hotkey)) > 1:
+        p.error("choose only one of --activate, --json, --list, or --install-hotkey")
+    if args.install_hotkey:
+        try:
+            install_hotkey()
+        except OSError as exc:
+            p.exit(1, str(exc) + "\n")
+    elif args.activate:
+        msg = activate_by_id(args.activate, args.fresh)
+        if msg:
+            p.exit(1, msg + "\n")
+    elif args.json:
+        print(json.dumps(to_json(collect(args.days)), ensure_ascii=False))
+    elif args.list:
         print_tree(args.days, args.recent)
     else:
         os.environ.setdefault("ESCDELAY", "25")
         try:
-            curses.wrapper(ui, args.days, args.recent)
+            curses.wrapper(ui, args.days, args.recent, args.watch)
         except KeyboardInterrupt:
             pass
 

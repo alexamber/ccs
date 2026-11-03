@@ -10,6 +10,7 @@ class Ccs < Formula
   def install
     bin.install "ccs"
     inreplace bin/"ccs", "#!/usr/bin/env python3", "#!#{Formula["python@3.14"].opt_bin}/python3.14"
+    (pkgshare/"hammerspoon").install "hammerspoon/ccs.lua"
   end
 
   test do
