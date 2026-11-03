@@ -1,92 +1,103 @@
 # ccs
 
-Browse Claude Code sessions in a searchable terminal directory tree. Press Enter
-to focus an open session's Terminal tab, attach to a live agent, or resume a closed
-session in a new Terminal window.
-
-## Requirements
-
-- macOS and Terminal.app for switching, attaching, and resuming sessions.
-- Python 3 with `curses` (no third-party Python packages).
-- Claude Code on your `PATH`. Live-session discovery uses `claude agents --json`;
-  attaching uses `claude attach`. These commands must be available in your version.
-  Saved sessions can still be listed if live-session discovery is unavailable.
-
-The first time you switch or resume, macOS may ask your terminal for permission
-to control Terminal.app.
+Find, switch, and resume Claude Code sessions from a searchable terminal tree or
+an optional global hotkey popup. Requires macOS, Terminal.app, and Claude Code.
 
 ## Install
-
-With Homebrew (the repository also serves as its own tap):
 
 ```sh
 brew tap alexamber/ccs https://github.com/alexamber/ccs.git && brew install --HEAD alexamber/ccs/ccs
 ```
 
-This installs the latest commit from `main` and its Python dependency. Claude Code
-must already be installed separately. To update: `brew reinstall --HEAD alexamber/ccs/ccs`.
+Homebrew installs Python. Run `ccs` to open the picker. Update with
+`brew reinstall --HEAD alexamber/ccs/ccs`.
 
-Or use the standalone installer if Python 3 is already installed:
+Already have Python 3? The standalone installer needs no sudo:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/alexamber/ccs/main/install.sh | sh
 ```
 
-From a local checkout:
+It installs to `~/.local/bin`. If needed, add
+`export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc`. From a checkout, run
+`./install.sh` or use `./ccs` directly.
+
+## Use
 
 ```sh
-./install.sh
+ccs                    # folder tree, last 7 days
+ccs --recent           # newest first
+ccs --days 0           # all saved sessions
+ccs --watch            # stay open; refresh every 5 seconds
+ccs --watch 10 --recent
+ccs --days 30 --list    # plain text
 ```
-
-This copies `ccs` to `~/.local/bin` without sudo. If that directory is not on your
-`PATH`, add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc`, then open a new
-terminal. To choose a different directory: `./install.sh /your/bin`.
-
-You can also run `./ccs` directly without installing.
-
-## Usage
-
-```sh
-ccs                       # folder tree; sessions active in the last 14 days
-ccs --recent              # most recent first
-ccs --days 0              # all saved sessions
-ccs --days 30 --list       # print the tree without the interactive UI
-```
-
-Live sessions are included regardless of `--days`. The age filter for saved
-sessions uses the transcript file's modification time.
 
 | Key | Action |
 | --- | --- |
-| Up / Down, Ctrl-P / Ctrl-N | Select a session |
-| Page Up / Page Down | Move by a page |
-| Enter | Switch, attach, or resume |
-| Tab | Toggle folder / recent view |
-| Type | Search folders, titles, names, prompts, and recaps |
-| Backspace | Delete a search character |
-| Escape | Clear search |
-| Ctrl-R | Refresh |
-| Ctrl-C | Quit |
+| Up / Down, Page Up / Page Down, Home / End | Select a session |
+| Enter | Focus, attach, or resume |
+| Ctrl-O | Start a new session in the selected folder |
+| Tab | Toggle folders / recent |
+| Left / Right | Cycle 1, 3, 7, 30 days, all |
+| Type / Backspace / Escape | Search / delete / clear |
+| Ctrl-R / Ctrl-C | Refresh / quit |
 
-Green indicates an idle live session; yellow indicates another live status.
-Closed sessions are dimmed. Larger terminals show a recap, last prompt, prompt
-count, and saved cost for the selected session.
+Green ● means idle, yellow ● means another live status, ○ means closed, and ?
+means status is unavailable. Rows show prompts, saved cost, and age; taller
+windows also show a recap. Watch mode stays open after Enter.
 
-## Data
+`ccs` looks for an existing Terminal tab before attaching. Before resuming a
+closed session it checks the live list again; if that check fails, it stops.
+This reduces accidental duplicate sessions but is not an atomic lock. Other
+terminal apps cannot be focused by this version.
 
-Reads transcripts under `~/.claude/projects/*/*.jsonl` and caches their extracted
-metadata in `~/.cache/ccs-index.json`. The cache contains session text, including
-prompt excerpts. Delete that file to rebuild it. Transcript files are not changed.
+For closed sessions with at least 20 prompts or $20 recorded cost, the picker
+offers **Start clean here** (default) or **Resume**. Recorded cost is not your
+subscription bill; it does not predict the cost of the next prompt.
 
-The transcript records and live-agent commands are Claude Code interfaces that
-may vary by version.
+## Optional hotkey popup
 
-## Development
+After installing `ccs`, run:
 
 ```sh
-python3 -m unittest discover -s tests -v
+brew install --cask hammerspoon && ccs --install-hotkey && open -a Hammerspoon
 ```
 
-## License
+In Hammerspoon's menu, choose **Reload Config**, then press **Option-Space**.
+Allow macOS permissions when requested. Setup preserves existing config, makes
+backups before changes, and avoids duplicate startup entries.
 
-[MIT](LICENSE).
+Type to search; Enter opens; Shift-Enter starts clean; Tab toggles folder view;
+Cmd-Left / Cmd-Right change the date range; Escape or Option-Space closes.
+The popup refreshes every 5 seconds while open and follows the system appearance.
+
+To customize, replace the `ccs` line in `~/.hammerspoon/init.lua`:
+
+```lua
+require("ccs").start({ mods = { "cmd", "alt" }, key = "k", days = 30, folders = true })
+```
+
+After updating `ccs`, rerun `ccs --install-hotkey` and **Reload Config** to update
+the popup. To remove it, delete that startup line and reload Hammerspoon.
+
+## Scripts and data
+
+`ccs --json` exports session metadata, newest first. `ccs --activate ID` focuses,
+attaches, or resumes a session; add `--fresh` to start clean in its folder.
+These explicit CLI actions do not show the large-session dialog.
+
+Transcripts stay unchanged under `~/.claude/projects`. The local cache at
+`~/.cache/ccs-index.json` contains titles, recaps, and prompt excerpts; delete it
+to rebuild it. Search in the terminal includes prompt excerpts; the popup
+searches the exported titles, names, folders, recaps, and last prompts.
+
+Live discovery requires `claude agents --json`; background attach requires
+`claude attach`. If your Claude Code version lacks these, browsing still works,
+but resuming is disabled when live status cannot be checked. Date ranges use
+transcript modification times and always include known live sessions.
+
+See [native apps, existing alternatives, and Codex support](docs/options.md).
+Tests: `python3 -m unittest discover -s tests -v` and `node --test tests/test_hotkey.mjs`.
+
+[MIT license](LICENSE).

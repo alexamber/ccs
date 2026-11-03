@@ -25,13 +25,19 @@ main() {
     if [ -f "$0" ]; then
         source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
         source_file="$source_dir/ccs"
+        hotkey_file="$source_dir/hammerspoon/ccs.lua"
     else
         download_dir=$(mktemp -d)
         source_file="$download_dir/ccs"
+        hotkey_file="$download_dir/ccs.lua"
         curl -fsSL https://raw.githubusercontent.com/alexamber/ccs/main/ccs -o "$source_file"
+        curl -fsSL https://raw.githubusercontent.com/alexamber/ccs/main/hammerspoon/ccs.lua -o "$hotkey_file"
     fi
 
     mkdir -p "$destination"
+    prefix=$(CDPATH= cd -- "$(dirname -- "$destination")" && pwd)
+    mkdir -p "$prefix/share/ccs/hammerspoon"
+    install -m 644 "$hotkey_file" "$prefix/share/ccs/hammerspoon/ccs.lua"
     install -m 755 "$source_file" "$destination/ccs"
     printf 'Installed %s/ccs\n' "$destination"
     case ":$PATH:" in

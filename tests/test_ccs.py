@@ -84,24 +84,113 @@ class SessionsTest(unittest.TestCase):
         ):
             self.assertEqual(ccs.collect(14)[0]["id"], "live")
 
+    def test_date_range_cycles_through_windows(self):
+        self.assertEqual(ccs.cycle_window(7, 1), 30)
+        self.assertEqual(ccs.cycle_window(30, 1), 0)
+        self.assertEqual(ccs.cycle_window(0, 1), 1)
+        self.assertEqual(ccs.cycle_window(1, -1), 0)
+        self.assertEqual(ccs.cycle_window(14, 1), 30)
+        self.assertEqual(ccs.cycle_window(14, -1), 7)
+
+    def test_watch_refresh_keeps_selected_session(self):
+        rows = ccs.build_rows([session("a", mtime=3), session("b", mtime=2), session("c", mtime=1)], "", recent=True)
+        selectable = list(range(len(rows)))
+        self.assertEqual(ccs.index_of(rows, selectable, "b", 0), 1)
+        self.assertEqual(ccs.index_of(rows, selectable, "gone", 2), 2)
+
+    def test_json_output_is_most_recent_first(self):
+        old = session("old", mtime=1, prompts="private prompt text")
+        new = session("new", mtime=2, cwd=str(Path.home() / "work"), name="helper",
+                      live={"status": "busy"})
+        result = ccs.to_json([old, new])
+        self.assertEqual([s["id"] for s in result], ["new", "old"])
+        self.assertEqual(result[0]["dir"], "~/work")
+        self.assertEqual([s["status"] for s in result], ["busy", "closed"])
+        self.assertNotIn("prompts", result[1])
+        self.assertEqual([s["mtime"] for s in result], [2, 1])
+        self.assertEqual([s["large"] for s in result], [False, False])
+        self.assertEqual(ccs.to_json([session(turns=25)])[0]["large"], True)
+        self.assertEqual(ccs.to_json([session(unknown=True)])[0]["status"], "unknown")
+
+    def test_large_sessions(self):
+        self.assertFalse(ccs.is_large(session(turns=19, cost=19.9)))
+        self.assertTrue(ccs.is_large(session(turns=20)))
+        self.assertTrue(ccs.is_large(session(cost=20.0)))
+        self.assertFalse(ccs.is_large(session(turns=50, live={"status": "idle"})))
+
+    def test_unreadable_live_list_marks_sessions_unknown(self):
+        with patch.object(ccs, "load_index", return_value={"a": session("a")}), \
+                patch.object(ccs, "open_sessions", return_value=None):
+            self.assertEqual(ccs.state(ccs.collect(7)[0]), "unknown")
+        with patch.object(ccs.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "")):
+            self.assertIsNone(ccs.open_sessions())
+
+    def test_activate_by_id(self):
+        with patch.object(ccs, "collect", return_value=[session("abc")]), \
+                patch.object(ccs, "activate", return_value=None) as activate:
+            self.assertIsNone(ccs.activate_by_id("abc", fresh=True))
+            activate.assert_called_once_with(session("abc"), True)
+            self.assertIn("missing", ccs.activate_by_id("missing"))
+
+    def test_resume_is_refused_or_redirected_by_a_fresh_live_check(self):
+        closed = session("abc")
+        with patch.object(ccs, "open_sessions", return_value=None), patch.object(ccs.subprocess, "run") as run:
+            self.assertIn("not resumed", ccs.activate(closed))
+            run.assert_not_called()
+        with patch.object(ccs, "open_sessions", return_value={"abc": {"kind": "background", "name": "bg"}}), \
+                patch.object(ccs.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+            self.assertIsNone(ccs.activate(closed))
+            self.assertEqual(shlex.split(run.call_args.args[0][-1]), ["claude", "attach", "bg"])
+
+    def test_fresh_session_starts_in_the_session_folder(self):
+        with patch.object(ccs, "open_sessions") as running, \
+                patch.object(ccs.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+            self.assertIsNone(ccs.activate(session(cwd="/tmp/it's here", live={"kind": "interactive", "pid": 1}), fresh=True))
+            self.assertEqual(shlex.split(run.call_args.args[0][-1]), ["cd", "/tmp/it's here", "&&", "claude"])
+            running.assert_not_called()
+
     def test_activation_quotes_shell_arguments(self):
         name = "helper'; echo injected; #"
-        with patch.object(ccs.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+        with patch.object(ccs, "open_sessions", return_value={}), \
+                patch.object(ccs.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
             self.assertIsNone(ccs.activate(session(live={"kind": "background", "name": name})))
             self.assertEqual(shlex.split(run.call_args.args[0][-1]), ["claude", "attach", name])
             self.assertIsNone(ccs.activate(session("id'; bad", cwd="/tmp/it's a project")))
             self.assertEqual(shlex.split(run.call_args.args[0][-1]),
                              ["cd", "/tmp/it's a project", "&&", "claude", "--resume", "id'; bad"])
 
+    def test_candidate_ttys_finds_viewers_and_the_starting_tab(self):
+        ps = ("  10     1 ??       login\n"
+              "  20    10 ttys001  claude\n"
+              "  30    20 ??       claude daemon run\n"
+              "  40    30 ttys010  claude --bg-pty-host /tmp/x.sock\n"
+              "  50    10 ttys015  claude attach My task\n"
+              "  60    10 ttys016  claude attach other\n")
+        with patch.object(ccs.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, ps, "")):
+            self.assertEqual(ccs.candidate_ttys(session("abc"), {"pid": 40, "name": "My task"}),
+                             ["ttys015", "ttys010", "ttys001"])
+
+    def test_open_sessions_are_focused_never_attached_twice(self):
+        background = session(live={"kind": "background", "pid": 40, "name": "My task"})
+        with patch.object(ccs, "candidate_ttys", return_value=["ttys010", "ttys001"]), \
+                patch.object(ccs.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "ok\n", "")) as run:
+            self.assertIsNone(ccs.activate(background))
+            self.assertEqual(run.call_args.args[0], ["osascript", "-", "/dev/ttys010", "/dev/ttys001"])
+            run.assert_called_once()
+        with patch.object(ccs, "candidate_ttys", return_value=[]), \
+                patch.object(ccs.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+            self.assertIsNone(ccs.activate(background))
+            self.assertEqual(shlex.split(run.call_args.args[0][-1]), ["claude", "attach", "My task"])
+            self.assertIn("not found", ccs.activate(session(live={"kind": "interactive", "pid": 1})))
+
     def test_focus_and_automation_errors(self):
         live = session(live={"kind": "interactive", "pid": 123})
-        with patch.object(ccs.subprocess, "run", side_effect=[
-            subprocess.CompletedProcess([], 0, "ttys001\n", ""),
-            subprocess.CompletedProcess([], 0, "ok\n", ""),
-        ]) as run:
+        with patch.object(ccs, "candidate_ttys", return_value=["ttys001"]), \
+                patch.object(ccs.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "ok\n", "")) as run:
             self.assertIsNone(ccs.activate(live))
             self.assertEqual(run.call_args.args[0], ["osascript", "-", "/dev/ttys001"])
-        with patch.object(ccs.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "Permission denied")):
+        with patch.object(ccs, "open_sessions", return_value={}), \
+                patch.object(ccs.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "Permission denied")):
             self.assertEqual(ccs.activate(session()), "Permission denied")
 
     def test_installer_and_cli_without_user_data(self):
@@ -119,6 +208,15 @@ class SessionsTest(unittest.TestCase):
             result = subprocess.run([os.sys.executable, str(installed), "--days", "-1"], env=env,
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 2)
+            result = subprocess.run([os.sys.executable, str(installed), "--watch", "-1"], env=env,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+            result = subprocess.run([os.sys.executable, str(installed), "--json"], env=env,
+                                    check=True, capture_output=True, text=True)
+            self.assertEqual(json.loads(result.stdout), [])
+            result = subprocess.run([os.sys.executable, str(installed), "--activate", "nope"], env=env,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
 
     def test_piped_installer_and_failed_download(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -126,16 +224,18 @@ class SessionsTest(unittest.TestCase):
             fake_bin = root / "fake-bin"
             fake_bin.mkdir()
             curl = fake_bin / "curl"
-            curl.write_text('#!/bin/sh\ncp "$CCS_TEST_SOURCE" "$4"\n')
+            curl.write_text('#!/bin/sh\ncase "$2" in\n*/hammerspoon/*) cp "$CCS_TEST_HOTKEY" "$4" ;;\n*) cp "$CCS_TEST_SOURCE" "$4" ;;\nesac\n')
             curl.chmod(0o755)
             destination = root / "installed"
             env = {**os.environ, "PATH": str(fake_bin) + ":" + os.environ["PATH"],
-                   "CCS_TEST_SOURCE": str(ROOT / "ccs")}
+                   "CCS_TEST_SOURCE": str(ROOT / "ccs"), "CCS_TEST_HOTKEY": str(ROOT / "hammerspoon/ccs.lua")}
             installer = (ROOT / "install.sh").read_text()
             subprocess.run(["sh", "-s", "--", str(destination)], input=installer,
                            env=env, check=True, capture_output=True, text=True)
             installed = destination / "ccs"
             self.assertEqual(installed.read_bytes(), (ROOT / "ccs").read_bytes())
+            self.assertEqual((root / "share/ccs/hammerspoon/ccs.lua").read_bytes(),
+                             (ROOT / "hammerspoon/ccs.lua").read_bytes())
             installed.write_text("previous installation")
             curl.write_text('#!/bin/sh\nexit 22\n')
             result = subprocess.run(["sh", "-s", "--", str(destination)], input=installer,
