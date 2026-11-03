@@ -1,0 +1,336 @@
+#!/usr/bin/env python3
+"""Browse Claude Code sessions as a directory tree; Enter focuses an open session's
+Terminal tab or resumes a closed one in a new Terminal window."""
+import argparse
+import curses
+import json
+import os
+import re
+import subprocess
+import time
+from pathlib import Path
+
+HOME = str(Path.home())
+PROJECTS = Path.home() / ".claude" / "projects"
+CACHE = Path.home() / ".cache" / "ccs-index.json"
+CWD_RE = re.compile(rb'"cwd":"((?:[^"\\]|\\.)*)"')
+INDEX_VERSION = 2
+META_MARKERS = (b'"type":"custom-title"', b'"type":"ai-title"', b'"type":"agent-name"',
+                b'"type":"last-prompt"', b'"type":"cost-state"')
+META_KEYS = ("title", "name", "recap", "last", "turns", "cost", "prompts")
+
+FOCUS_TAB = '''
+on run argv
+ set wanted to item 1 of argv
+ tell application "Terminal"
+   repeat with w in windows
+     try
+       set wtabs to tabs of w
+     on error
+       set wtabs to {}
+     end try
+     repeat with t in wtabs
+       if tty of t is wanted then
+         set selected of t to true
+         set index of w to 1
+         activate
+         return "ok"
+       end if
+     end repeat
+   end repeat
+ end tell
+ return "missing"
+end run
+'''
+
+RUN_IN_NEW_WINDOW = '''
+on run argv
+ tell application "Terminal"
+   do script (item 1 of argv)
+   activate
+ end tell
+end run
+'''
+
+
+def open_sessions():
+    try:
+        out = subprocess.run(["claude", "agents", "--json"], capture_output=True, text=True, timeout=15).stdout
+        return {s["sessionId"]: s for s in json.loads(out)}
+    except (OSError, ValueError, KeyError, subprocess.TimeoutExpired):
+        return {}
+
+
+def prompt_text(rec):
+    content = (rec.get("message") or {}).get("content")
+    if isinstance(content, list):
+        content = next((c.get("text") for c in content if isinstance(c, dict) and c.get("type") == "text"), None)
+    if isinstance(content, str) and content.strip() and not content.lstrip().startswith("<"):
+        return " ".join(content.split())
+    return None
+
+
+def scan_transcript(path):
+    cwd = custom = ai = name = recap = last = cost = None
+    prompts = []
+    with open(path, "rb") as f:
+        for raw in f:
+            if cwd is None:
+                m = CWD_RE.search(raw)
+                if m:
+                    cwd = json.loads(b'"' + m.group(1) + b'"')
+            head = raw[:200]
+            small = any(k in head for k in META_MARKERS) or b'"subtype":"away_summary"' in raw[:400]
+            if not small and b'"turnOrigin":"human"' not in raw:
+                continue
+            try:
+                rec = json.loads(raw)
+            except ValueError:
+                continue
+            t = rec.get("type")
+            if t == "custom-title":
+                custom = rec.get("customTitle") or custom
+            elif t == "ai-title":
+                ai = rec.get("aiTitle") or ai
+            elif t == "agent-name":
+                name = rec.get("agentName") or name
+            elif t == "last-prompt":
+                last = rec.get("lastPrompt") or last
+            elif t == "cost-state":
+                cost = rec.get("totalCostUSD", cost)
+            elif rec.get("subtype") == "away_summary":
+                recap = rec.get("content") or recap
+            elif t == "user":
+                text = prompt_text(rec)
+                if text:
+                    prompts.append(text[:300])
+    return {
+        "v": INDEX_VERSION, "cwd": cwd, "title": custom or ai or (prompts[0] if prompts else ""),
+        "name": name, "recap": " ".join((recap or "").split()), "last": " ".join((last or "").split()),
+        "turns": len(prompts), "cost": cost, "prompts": " ".join(prompts)[:4000],
+    }
+
+
+def load_index(days):
+    try:
+        cache = json.loads(CACHE.read_text())
+    except (OSError, ValueError):
+        cache = {}
+    cutoff = time.time() - days * 86400 if days else 0
+    fresh, sessions = {}, {}
+    for path in PROJECTS.glob("*/*.jsonl"):
+        st = path.stat()
+        if st.st_mtime < cutoff:
+            continue
+        key = str(path)
+        entry = cache.get(key)
+        if (not entry or entry.get("v") != INDEX_VERSION
+                or entry["mtime"] != st.st_mtime or entry["size"] != st.st_size):
+            entry = {"mtime": st.st_mtime, "size": st.st_size, **scan_transcript(path)}
+        fresh[key] = entry
+        if entry["cwd"]:
+            sessions[path.stem] = {"id": path.stem, "cwd": entry["cwd"], "mtime": st.st_mtime,
+                                   **{k: entry[k] for k in META_KEYS}}
+    CACHE.parent.mkdir(parents=True, exist_ok=True)
+    CACHE.write_text(json.dumps({**{k: v for k, v in cache.items() if v.get("v") == INDEX_VERSION}, **fresh}))
+    return sessions
+
+
+def collect(days):
+    sessions = load_index(days)
+    for sid, live in open_sessions().items():
+        s = sessions.setdefault(sid, {"id": sid, "cwd": live.get("cwd", ""), "mtime": live.get("startedAt", 0) / 1000,
+                                      "title": "", "name": None, "recap": "", "last": "", "turns": 0,
+                                      "cost": None, "prompts": ""})
+        s["live"] = live
+        s["name"] = live.get("name") or s["name"]
+    return list(sessions.values())
+
+
+def short(path):
+    return "~" + path[len(HOME):] if path == HOME or path.startswith(HOME + "/") else path
+
+
+def age(ts):
+    d = time.time() - ts
+    for unit, secs in (("d", 86400), ("h", 3600), ("m", 60)):
+        if d >= secs:
+            return f"{int(d // secs)}{unit}"
+    return "now"
+
+
+def matches(s, q):
+    return not q or q in f"{s['cwd']} {s['title']} {s['name'] or ''} {s['recap']} {s['last']} {s['prompts']}".lower()
+
+
+def build_rows(sessions, query, recent=False):
+    q = query.lower()
+    found = [s for s in sessions if matches(s, q)]
+    if recent:
+        return [{"kind": "session", "depth": 0, "session": s, "dir": short(s["cwd"])}
+                for s in sorted(found, key=lambda s: -s["mtime"])]
+    by_dir = {}
+    for s in found:
+        by_dir.setdefault(s["cwd"], []).append(s)
+    rows, shown = [], set()
+    for cwd in sorted(by_dir):
+        parts = short(cwd).split("/")
+        for depth in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:depth])
+            if prefix not in shown:
+                shown.add(prefix)
+                rows.append({"kind": "dir", "depth": depth - 1, "label": parts[depth - 1] + "/"})
+        for s in sorted(by_dir[cwd], key=lambda s: (not s.get("live"), -s["mtime"])):
+            rows.append({"kind": "session", "depth": len(parts), "session": s})
+    return rows
+
+
+def session_label(s):
+    live = s.get("live")
+    mark, state = ("●", live.get("status", "open")) if live else ("○", "closed")
+    name = f"[{s['name']}] " if s["name"] else ""
+    return mark, f"{mark} {state:<7} {age(s['mtime']):>4}  {name}{s['title'] or s['id'][:8]}"
+
+
+def detail_lines(s, width):
+    stats = [f"{s['turns']} prompts"]
+    if s["cost"]:
+        stats.append(f"${s['cost']:.2f}")
+    stats.append(f"resume id {s['id']}")
+    recap = s["recap"] or "(no recap saved for this session)"
+    return [
+        f"recap: {recap}"[:width * 2],
+        f"last prompt: {s['last'] or '-'}",
+        " · ".join(stats),
+    ]
+
+
+def activate(s):
+    live = s.get("live")
+    try:
+        if live and live.get("kind") == "interactive" and live.get("pid"):
+            tty = subprocess.run(["ps", "-o", "tty=", "-p", str(live["pid"])], capture_output=True, text=True).stdout.strip()
+            if tty and tty != "??":
+                res = subprocess.run(["osascript", "-", "/dev/" + tty], input=FOCUS_TAB, capture_output=True, text=True)
+                if res.stdout.strip() == "ok":
+                    return None
+            return "Window not found in Terminal.app (it may run in another terminal app)."
+        if live:
+            cmd = f"claude attach {sh_quote(live.get('name') or s['id'])}"
+        else:
+            cmd = f"cd {sh_quote(s['cwd'])} && claude --resume {sh_quote(s['id'])}"
+        res = subprocess.run(["osascript", "-", cmd], input=RUN_IN_NEW_WINDOW, capture_output=True, text=True)
+        if res.returncode:
+            return res.stderr.strip() or "Could not open Terminal.app."
+    except OSError as exc:
+        return str(exc)
+    return None
+
+
+def sh_quote(text):
+    return "'" + text.replace("'", "'\\''") + "'"
+
+
+def row_text(r):
+    text = session_label(r["session"])[1]
+    return f"{text}  · {r['dir']}" if "dir" in r else text
+
+
+def ui(stdscr, days, recent):
+    curses.curs_set(0)
+    curses.use_default_colors()
+    for i, c in enumerate((curses.COLOR_GREEN, curses.COLOR_YELLOW, curses.COLOR_CYAN), start=1):
+        curses.init_pair(i, c, -1)
+    sessions, query, sel, top, msg = collect(days), "", 0, 0, ""
+    while True:
+        rows = build_rows(sessions, query, recent)
+        selectable = [i for i, r in enumerate(rows) if r["kind"] == "session"]
+        sel = min(sel, max(len(selectable) - 1, 0))
+        h, w = stdscr.getmaxyx()
+        panel = h >= 14
+        body = h - 8 if panel else h - 3
+        cur = selectable[sel] if selectable else -1
+        if cur >= 0:
+            top = min(max(top, cur - body + 1), cur)
+        stdscr.erase()
+        live_n = sum(1 for s in sessions if s.get("live"))
+        header = (f" Claude sessions  {live_n} open · {len(sessions) - live_n} closed"
+                  + (f" · last {days}d" if days else "") + (" · most recent first" if recent else " · by folder"))
+        stdscr.addnstr(0, 0, header, w - 1, curses.A_BOLD)
+        for y, r in enumerate(rows[top:top + body], start=1):
+            indent = "  " * r["depth"]
+            if r["kind"] == "dir":
+                stdscr.addnstr(y, 0, indent + r["label"], w - 1, curses.color_pair(3))
+                continue
+            s = r["session"]
+            text = row_text(r)
+            attr = curses.A_REVERSE if top + y - 1 == cur else 0
+            if s.get("live"):
+                attr |= curses.color_pair(1 if s["live"].get("status") == "idle" else 2)
+            else:
+                attr |= curses.A_DIM
+            stdscr.addnstr(y, 0, indent + text, w - 1, attr)
+        if panel and cur >= 0:
+            stdscr.hline(h - 7, 0, curses.ACS_HLINE, w)
+            recap, last, stats = detail_lines(rows[cur]["session"], w - 2)
+            stdscr.addnstr(h - 6, 1, recap[:w - 2], w - 2)
+            stdscr.addnstr(h - 5, 1, recap[w - 2:], w - 2)
+            stdscr.addnstr(h - 4, 1, last, w - 2, curses.A_DIM)
+            stdscr.addnstr(h - 3, 1, stats, w - 2, curses.A_DIM)
+        footer = msg or ("↑↓ move · Enter switch/resume · Tab folder/recent view · "
+                         "type to search titles, prompts, recaps · Esc clear · ^R refresh · ^C quit")
+        stdscr.addnstr(h - 2, 0, f" filter: {query}", w - 1, curses.A_BOLD)
+        stdscr.addnstr(h - 1, 0, " " + footer, w - 1, curses.A_DIM)
+        stdscr.refresh()
+        msg = ""
+        key = stdscr.get_wch()
+        if key in (curses.KEY_UP, "\x10"):
+            sel = max(sel - 1, 0)
+        elif key in (curses.KEY_DOWN, "\x0e"):
+            sel = min(sel + 1, max(len(selectable) - 1, 0))
+        elif key == curses.KEY_PPAGE:
+            sel = max(sel - body, 0)
+        elif key == curses.KEY_NPAGE:
+            sel = min(sel + body, max(len(selectable) - 1, 0))
+        elif key in ("\n", "\r", curses.KEY_ENTER) and selectable:
+            msg = activate(rows[cur]["session"])
+            if not msg:
+                return
+        elif key == "\x1b":
+            query, sel = "", 0
+        elif key in (curses.KEY_BACKSPACE, "\x7f", "\b"):
+            query = query[:-1]
+        elif key == "\x12":
+            sessions = collect(days)
+        elif key == "\t":
+            recent, sel, top = not recent, 0, 0
+        elif isinstance(key, str) and key.isprintable():
+            query, sel = query + key, 0
+
+
+def print_tree(days, recent):
+    for r in build_rows(collect(days), "", recent):
+        indent = "  " * r["depth"]
+        print(indent + (r["label"] if r["kind"] == "dir" else row_text(r)))
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--days", type=int, default=14, help="hide closed sessions older than this (0 = all)")
+    p.add_argument("--list", action="store_true", help="print the tree and exit")
+    p.add_argument("-r", "--recent", action="store_true", help="start with the most recent first instead of by folder")
+    args = p.parse_args()
+    if args.days < 0:
+        p.error("--days must be zero or greater")
+    if args.list:
+        print_tree(args.days, args.recent)
+    else:
+        os.environ.setdefault("ESCDELAY", "25")
+        try:
+            curses.wrapper(ui, args.days, args.recent)
+        except KeyboardInterrupt:
+            pass
+
+
+if __name__ == "__main__":
+    main()
