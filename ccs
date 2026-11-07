@@ -26,6 +26,10 @@ LARGE_PROMPTS = 20
 LARGE_COST = 20.0
 META_RE = re.compile(rb'"(?:type|subtype)"\s*:\s*"(?:custom-title|ai-title|agent-name|last-prompt|cost-state|away_summary|user)"')
 META_KEYS = ("title", "name", "recap", "last", "turns", "cost", "prompts")
+NEW_ROOT = "~/ccs-sessions"
+NEW_DIR_RE = re.compile(r"(\d{4}-\d{2}-\d{2})-(\d+)")
+# Covers the moment between creating a folder and its shell entering it, when no process uses it yet.
+PRUNE_AFTER = 300
 
 FOCUS_TAB = '''
 on run argv
@@ -356,6 +360,79 @@ def activate(s, fresh=False):
         return "Terminal activation timed out. Try again."
 
 
+def new_root():
+    return Path(os.environ.get("CCS_NEW_DIR") or NEW_ROOT).expanduser()
+
+
+def busy_dirs():
+    """Working directories of running processes, or None when they cannot be listed."""
+    try:
+        out = subprocess.run(["lsof", "-w", "-d", "cwd", "-Fn"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return {line[1:] for line in out.splitlines() if line.startswith("n")} or None
+
+
+def prune(paths, min_age):
+    """Remove empty dated folders that no process is in and no saved transcript names; they can never be resumed."""
+    cutoff = time.time() - min_age
+    candidates = []
+    for path in paths:
+        try:
+            if NEW_DIR_RE.fullmatch(path.name) and path.is_dir() and not path.is_symlink() \
+                    and path.stat().st_mtime <= cutoff and not any(path.iterdir()):
+                candidates.append(path)
+        except OSError:
+            continue
+    if not candidates:
+        return
+    busy = busy_dirs()
+    if busy is None:
+        return
+    used = busy | {s["cwd"] for s in load_index(0).values()}
+    for path in candidates:
+        if str(path) not in used and str(path.resolve()) not in used:
+            try:
+                path.rmdir()
+            except OSError:
+                continue
+
+
+def make_new_dir(root, today=None):
+    today = today or time.strftime("%Y-%m-%d")
+    root.mkdir(parents=True, exist_ok=True)
+    prune(list(root.iterdir()), PRUNE_AFTER)
+    taken = [int(m.group(2)) for p in root.iterdir()
+             if (m := NEW_DIR_RE.fullmatch(p.name)) and m.group(1) == today]
+    number = max(taken, default=0) + 1
+    while True:
+        path = root / f"{today}-{number}"
+        try:
+            path.mkdir()
+            return path
+        except FileExistsError:
+            number += 1
+
+
+def new_session():
+    """Start Claude Code in a new dated folder; returns (folder, error)."""
+    try:
+        path = make_new_dir(new_root())
+    except OSError as exc:
+        return None, f"Could not create a session folder: {exc}"
+    try:
+        folder, script = sh_quote(str(path)), sh_quote(str(Path(__file__).absolute()))
+        error = run_in_terminal(f"cd {folder} && claude; cd; {script} --prune {folder}")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        error = str(exc) or "Terminal activation timed out. Try again."
+    if error:
+        try:
+            path.rmdir()
+        except OSError:
+            pass
+    return path, error
+
+
 def activate_by_id(sid, fresh=False):
     found = next((s for s in collect(0) if s["id"] == sid), None)
     return activate(found, fresh) if found else f"No Claude Code session with id {sid}."
@@ -525,7 +602,7 @@ def ui(stdscr, days, recent, watch=0):
             w - x - 1, 0 if query else curses.A_DIM)
         if any(s.get("unknown") for s in sessions):
             msg = msg or "Open/closed status unavailable (claude agents --json failed): resuming is disabled."
-        footer = msg or ("↵ open · ^O new here · Tab recent/folders · ←→ range · "
+        footer = msg or ("↵ open · ^O new here · ^T new session · Tab recent/folders · ←→ range · "
                          "Esc clear search · ^R refresh · ^C quit")
         put(stdscr, h - 1, 1, footer, w - 2, colors["large"] if msg else curses.A_DIM)
         stdscr.refresh()
@@ -553,6 +630,10 @@ def ui(stdscr, days, recent, watch=0):
                 msg = activate(s, fresh=choice == "fresh")
                 if not msg and not watch:
                     return
+        elif key == "\x14":
+            msg = new_session()[1]
+            if not msg and not watch:
+                return
         elif key == "\x1b":
             query, sel = "", 0
         elif key in (curses.KEY_BACKSPACE, "\x7f", "\b"):
@@ -614,6 +695,10 @@ def main():
     p.add_argument("--json", action="store_true", help="print sessions as JSON, most recent first, and exit")
     p.add_argument("--activate", metavar="ID", help="switch to, attach or resume the session with this id, and exit")
     p.add_argument("--fresh", action="store_true", help="with --activate: start a new session in that session's folder")
+    p.add_argument("--new", action="store_true",
+                   help=f"start Claude Code in a new dated folder under $CCS_NEW_DIR (default {NEW_ROOT}), and exit")
+    p.add_argument("--prune", metavar="FOLDER", type=Path,
+                   help="remove FOLDER if it is an empty dated folder that no process uses and no saved session names")
     p.add_argument("--install-hotkey", action="store_true", help="install and configure the optional Hammerspoon picker")
     args = p.parse_args()
     if args.days < 0:
@@ -622,9 +707,16 @@ def main():
         p.error("--watch must be zero or greater")
     if args.fresh and not args.activate:
         p.error("--fresh requires --activate")
-    if sum(bool(value) for value in (args.activate, args.json, args.list, args.install_hotkey)) > 1:
-        p.error("choose only one of --activate, --json, --list, or --install-hotkey")
-    if args.install_hotkey:
+    if sum(bool(value) for value in (args.activate, args.json, args.list, args.new, args.prune, args.install_hotkey)) > 1:
+        p.error("choose only one of --activate, --json, --list, --new, --prune, or --install-hotkey")
+    if args.new:
+        path, msg = new_session()
+        if msg:
+            p.exit(1, msg + "\n")
+        print(path)
+    elif args.prune:
+        prune([args.prune.absolute()], 0)
+    elif args.install_hotkey:
         try:
             install_hotkey()
         except OSError as exc:

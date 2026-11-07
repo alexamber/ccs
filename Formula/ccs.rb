@@ -1,16 +1,17 @@
 class Ccs < Formula
-  desc "Browse, switch, and resume Claude Code sessions in a terminal tree"
+  desc "Native macOS and terminal picker for Claude Code sessions"
   homepage "https://github.com/alexamber/ccs"
   license "MIT"
   head "https://github.com/alexamber/ccs.git", branch: "main"
 
   depends_on :macos
-  depends_on "python@3.14"
+  depends_on xcode: ["15.0", :build]
 
   def install
-    bin.install "ccs"
-    inreplace bin/"ccs", "#!/usr/bin/env python3", "#!#{Formula["python@3.14"].opt_bin}/python3.14"
-    (pkgshare/"hammerspoon").install "hammerspoon/ccs.lua"
+    ENV["CCS_BUILD_ARCHS"] = Hardware::CPU.arm? ? "arm64" : "x86_64"
+    system "bash", "scripts/build-app.sh", "--development", "--app-only"
+    prefix.install "build/CCS.app"
+    bin.install_symlink prefix/"CCS.app/Contents/MacOS/ccs"
   end
 
   test do

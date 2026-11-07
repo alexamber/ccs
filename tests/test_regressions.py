@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 import tempfile
 import unittest
@@ -110,6 +111,35 @@ class RegressionTest(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 ccs.ui(win, 7, False, watch=1)
             self.assertEqual(collect.call_count, 2)
+
+    def test_ctrl_t_starts_a_new_session_and_closes_the_picker(self):
+        with patch.object(ccs.curses, "curs_set"), patch.object(ccs.curses, "use_default_colors"), \
+                patch.object(ccs.curses, "init_pair"), patch.object(ccs.curses, "color_pair", return_value=0), \
+                patch.object(ccs, "collect", return_value=[]), \
+                patch.object(ccs, "new_session", return_value=(Path("/tmp/x"), None)) as new:
+            self.assertIsNone(ccs.ui(Window(keys=["\x14"]), 7, False))
+            new.assert_called_once()
+
+    def test_popup_reads_settings_from_the_login_shell_not_from_hammerspoon(self):
+        lua = (Path(__file__).resolve().parents[1] / "hammerspoon" / "ccs.lua").read_text()
+        probe = re.search(r"local probe = \[\[(.*?)\]\]", lua).group(1)
+        self.assertIn("""hs.execute((os.getenv("SHELL") or "/bin/zsh") .. " -l -i -c '" .. probe:gsub("'", [['\\'']]) .. "'")""", lua)
+        command = "/bin/zsh -l -i -c '" + probe.replace("'", "'\\''") + "'"
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            bin_dir = home / "my bin"
+            bin_dir.mkdir()
+            (bin_dir / "ccs").write_text("#!/bin/sh\n")
+            (bin_dir / "ccs").chmod(0o755)
+            (home / ".zshrc").write_text(f"export PATH='{bin_dir}':$PATH\nexport CCS_NEW_DIR=\"$HOME/it's mine\"\n")
+            # io.popen runs the command through /bin/sh with Hammerspoon's own, minimal environment.
+            out = subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True, timeout=30,
+                                 env={"HOME": str(home), "ZDOTDIR": str(home), "PATH": "/usr/bin:/bin",
+                                      "CCS_NEW_DIR": "/wrong"}).stdout
+        path, ccs_bin, new_dir = re.search(r"@@(.*?)@@(.*?)@@(.*?)@@", out).groups()
+        self.assertTrue(path.startswith(str(bin_dir) + ":"))
+        self.assertEqual(ccs_bin, str(bin_dir / "ccs"))
+        self.assertEqual(new_dir, str(home / "it's mine"))
 
     def test_hotkey_setup_is_idempotent_and_preserves_custom_config(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(ccs.Path, "home", return_value=Path(directory)):

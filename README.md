@@ -1,103 +1,163 @@
-# ccs
+# CCS
 
-Find, switch, and resume Claude Code sessions from a searchable terminal tree or
-an optional global hotkey popup. Requires macOS, Terminal.app, and Claude Code.
+A native macOS popup and terminal picker for Claude Code sessions. Search saved
+sessions, focus an existing Terminal tab, resume a closed conversation, or start
+clean in a project or a new dated folder.
+
+CCS requires macOS 14 or later, Terminal.app, and an installed `claude` command.
+The Swift app and CLI share one engine. Neither Python nor Hammerspoon is needed.
 
 ## Install
 
-```sh
-brew tap alexamber/ccs https://github.com/alexamber/ccs.git && brew install --HEAD alexamber/ccs/ccs
-```
+Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v0.2.0/CCS-0.2.0-macos-universal.dmg),
+drag CCS into Applications, and open it. Choose **Install Command-Line Tool** in
+the CCS menu to install the terminal picker too. Both Apple Silicon and Intel
+executables are included.
 
-Homebrew installs Python. Run `ccs` to open the picker. Update with
-`brew reinstall --HEAD alexamber/ccs/ccs`.
-
-Already have Python 3? The standalone installer needs no sudo:
+Or install both the app and CLI with Homebrew:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/alexamber/ccs/main/install.sh | sh
+brew tap alexamber/ccs https://github.com/alexamber/ccs.git
+brew install --cask alexamber/ccs/ccs
 ```
 
-It installs to `~/.local/bin`. If needed, add
-`export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc`. From a checkout, run
-`./install.sh` or use `./ccs` directly.
+If the old formula is installed, uninstall it with
+`brew uninstall --formula alexamber/ccs/ccs` before installing the cask.
+
+To build from this checkout, with Xcode 15 or newer installed:
+
+```sh
+bash scripts/build-app.sh --development
+bash scripts/install-native.sh
+open ~/Applications/CCS.app
+```
+
+This builds a universal Apple Silicon/Intel app plus a DMG and ZIP in `dist/`.
+Development artifacts are ad-hoc signed and are not notarized public downloads.
+The local installer installs `~/Applications/CCS.app` and links `~/.local/bin/ccs`.
+It backs up an existing app and command before replacing them. If needed, add
+`export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc`.
 
 ## Use
 
+Press **Option-Space** to open the native picker. Type to search, use the arrow
+keys to select, and press Enter to focus, attach, or resume a session.
+
+| Shortcut | Action |
+| --- | --- |
+| Option-Space while open, or Cmd-N | New session in a dated folder |
+| Shift-Enter | Start clean in the selected session's folder |
+| Tab | Toggle Recent / Folders |
+| Cmd-Left / Cmd-Right | Change the date range |
+| Cmd-R | Refresh |
+| Escape | Close, or cancel the large-session dialog |
+| Cmd-comma | Settings |
+
+The popup opens on the screen containing the pointer, follows system appearance,
+and refreshes every five seconds while visible. CCS stays in the menu bar;
+launch at login is optional and off by default. Quit CCS to release its shortcut.
+If Hammerspoon still has the old CCS shortcut, remove its `require("ccs").start()`
+line and reload Hammerspoon, or choose another shortcut in CCS Settings.
+
+macOS requests Automation permission when CCS first controls Terminal. Allow it
+in System Settings → Privacy & Security → Automation. Browsing does not require
+Terminal automation. A missing `claude` command or failed live-status check is
+reported; CCS does not resume a session when it cannot verify whether it is open.
+
+## Terminal CLI
+
+A download includes the CLI inside the app. Choose **Install Command-Line Tool**
+in CCS's menu to install it into `~/.local/bin`. Homebrew installations link the
+command into Homebrew's `bin` directory.
+
 ```sh
-ccs                    # folder tree, last 7 days
+ccs                    # terminal folder tree, last 7 days
 ccs --recent           # newest first
 ccs --days 0           # all saved sessions
 ccs --watch            # stay open; refresh every 5 seconds
 ccs --watch 10 --recent
 ccs --days 30 --list    # plain text
+ccs --json             # metadata as JSON, newest first
+ccs --gui              # show the native popup
+ccs --new              # new session in a dated folder
+ccs --activate ID      # focus, attach, or resume
+ccs --activate ID --fresh
 ```
 
-| Key | Action |
+| Terminal key | Action |
 | --- | --- |
 | Up / Down, Page Up / Page Down, Home / End | Select a session |
 | Enter | Focus, attach, or resume |
-| Ctrl-O | Start a new session in the selected folder |
+| Ctrl-O | Start clean in the selected folder |
+| Ctrl-T | New session in a dated folder |
 | Tab | Toggle folders / recent |
-| Left / Right | Cycle 1, 3, 7, 30 days, all |
+| Left / Right | Change date range |
 | Type / Backspace / Escape | Search / delete / clear |
 | Ctrl-R / Ctrl-C | Refresh / quit |
 
-Green ● means idle, yellow ● means another live status, ○ means closed, and ?
-means status is unavailable. Rows show prompts, saved cost, and age; taller
-windows also show a recap. Watch mode stays open after Enter.
+Green means idle, orange means another live status, a hollow circle means closed,
+and a question mark means live status is unavailable. Closed sessions with at
+least 20 prompts or $20 recorded cost offer **Start clean here** or **Resume**.
+Recorded cost is saved metadata, not a subscription bill or a price prediction.
+Explicit CLI actions do not show that confirmation dialog.
 
-`ccs` looks for an existing Terminal tab before attaching. Before resuming a
-closed session it checks the live list again; if that check fails, it stops.
-This reduces accidental duplicate sessions but is not an atomic lock. Other
-terminal apps cannot be focused by this version.
+## New sessions and settings
 
-For closed sessions with at least 20 prompts or $20 recorded cost, the picker
-offers **Start clean here** (default) or **Resume**. Recorded cost is not your
-subscription bill; it does not predict the cost of the next prompt.
-
-## Optional hotkey popup
-
-After installing `ccs`, run:
+New sessions use folders such as `~/ccs-sessions/2026-11-08-1`. The counter is
+locked across concurrent launches and retains its high-water mark after cleanup.
+Choose another base folder in Settings, or override it in your shell:
 
 ```sh
-brew install --cask hammerspoon && ccs --install-hotkey && open -a Hammerspoon
+export CCS_NEW_DIR=~/mind/ccs
 ```
 
-In Hammerspoon's menu, choose **Reload Config**, then press **Option-Space**.
-Allow macOS permissions when requested. Setup preserves existing config, makes
-backups before changes, and avoids duplicate startup entries.
+Restart CCS after changing shell settings. CCS reads its shell PATH and this
+override at startup. Settings are shared with the CLI in
+`~/.config/ccs/settings.json`.
 
-Type to search; Enter opens; Shift-Enter starts clean; Tab toggles folder view;
-Cmd-Left / Cmd-Right change the date range; Escape or Option-Space closes.
-The popup refreshes every 5 seconds while open and follows the system appearance.
+When Claude exits, the bundled CLI removes the folder only if it is empty, no
+saved session names it, and no process is using it. Another launch also checks
+abandoned folders older than five minutes. Cleanup keeps symlinks, other folder
+names, nonempty folders, saved-session folders, and folders whose safety cannot
+be verified. Cleanup can be disabled in Settings.
 
-To customize, replace the `ccs` line in `~/.hammerspoon/init.lua`:
+Transcripts remain under `~/.claude/projects`. The native metadata cache in
+`~/.cache/ccs/index-v1.json` contains titles, recaps, and prompt excerpts, with
+private file permissions. It may be deleted to rebuild it. Session data is not
+uploaded by CCS.
 
-```lua
-require("ccs").start({ mods = { "cmd", "alt" }, key = "k", days = 30, folders = true })
+## Distribution
+
+The alternative source Homebrew formula builds the native app and CLI locally:
+
+```sh
+brew tap alexamber/ccs https://github.com/alexamber/ccs.git
+brew install --HEAD alexamber/ccs/ccs
 ```
 
-After updating `ccs`, rerun `ccs --install-hotkey` and **Reload Config** to update
-the popup. To remove it, delete that startup line and reload Hammerspoon.
+The source formula requires Xcode. The release cask installs both the app and CLI
+from the signed universal DMG without a compiler dependency. Its checksum is
+generated from the notarized artifact.
 
-## Scripts and data
+See [release and signing instructions](docs/releasing.md). App Store distribution
+is deferred; [the sandbox feasibility results](docs/app-store-feasibility.md)
+explain the differences. Codex session support is outside this first native
+release. There is an optional HTTPS tip-link slot in the build; no payment page
+or paid features are configured.
 
-`ccs --json` exports session metadata, newest first. `ccs --activate ID` focuses,
-attaches, or resumes a session; add `--fresh` to start clean in its folder.
-These explicit CLI actions do not show the large-session dialog.
+## Development
 
-Transcripts stay unchanged under `~/.claude/projects`. The local cache at
-`~/.cache/ccs-index.json` contains titles, recaps, and prompt excerpts; delete it
-to rebuild it. Search in the terminal includes prompt excerpts; the popup
-searches the exported titles, names, folders, recaps, and last prompts.
+```sh
+swift test
+bash scripts/build-app.sh --development
+python3 scripts/check-native.py build/CCS.app/Contents/MacOS/ccs
+```
 
-Live discovery requires `claude agents --json`; background attach requires
-`claude attach`. If your Claude Code version lacks these, browsing still works,
-but resuming is disabled when live status cannot be checked. Date ranges use
-transcript modification times and always include known live sessions.
-
-See [native apps, existing alternatives, and Codex support](docs/options.md).
-Tests: `python3 -m unittest discover -s tests -v` and `node --test tests/test_hotkey.mjs`.
+The developer-only smoke script checks the packaged CLI and a real terminal; it
+is not shipped as an app dependency. The original Python executable (`./ccs`),
+installer (`install.sh`), Hammerspoon module, and their tests remain in this
+checkout as the legacy implementation and compatibility reference. They are not
+included in the native app. Their checks are `python3 -m unittest discover -s
+tests -v` and `node --test tests/test_hotkey.mjs`.
 
 [MIT license](LICENSE).

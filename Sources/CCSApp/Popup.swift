@@ -1,0 +1,243 @@
+import AppKit
+import CCSCore
+
+final class PickerPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
+final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+    let panel: PickerPanel
+    let engine: Engine
+    var settings: Settings
+    var onSettings: (() -> Void)?
+    private let search = NSSearchField(), table = NSTableView(), scroll = NSScrollView()
+    private let views = NSSegmentedControl(labels: ["Recent", "Folders"], trackingMode: .selectOne, target: nil, action: nil)
+    private let ranges = NSSegmentedControl(labels: ["1d", "3d", "7d", "30d", "All"], trackingMode: .selectOne, target: nil, action: nil)
+    private let count = NSTextField(labelWithString: ""), message = NSTextField(labelWithString: "")
+    private let empty = NSTextField(labelWithString: "Loading sessions…")
+    private var sessions = [Session](), rows = [SessionRow](), timer: Timer?, monitor: Any?
+    private var generation = 0, loading = false, asking = false
+    private var previousApplication: NSRunningApplication?
+    private var days: Int, recent: Bool
+    init(engine: Engine, settings: Settings) {
+        self.engine = engine; self.settings = settings
+        days = settings.defaultDays; recent = !settings.folders
+        panel = PickerPanel(contentRect: NSRect(x: 0, y: 0, width: 700, height: 470), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        super.init()
+        panel.delegate = self; panel.isReleasedWhenClosed = false
+        panel.level = .floating; panel.isFloatingPanel = true; panel.hidesOnDeactivate = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = true
+        panel.becomesKeyOnlyIfNeeded = false; panel.title = "CCS session picker"
+        let background = NSVisualEffectView(); background.material = .popover; background.state = .active
+        background.wantsLayer = true; background.layer?.cornerRadius = 14; background.layer?.masksToBounds = true
+        panel.contentView = background
+        let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false; background.addSubview(stack)
+        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -16),
+            stack.topAnchor.constraint(equalTo: background.topAnchor, constant: 16),
+            stack.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -12)])
+        search.placeholderString = "Search Claude sessions"; search.font = .systemFont(ofSize: 17)
+        search.delegate = self; search.sendsSearchStringImmediately = true
+        search.setAccessibilityLabel("Search sessions")
+        stack.addArrangedSubview(search); search.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        let bar = NSStackView(); bar.spacing = 10
+        views.target = self; views.action = #selector(changeView); views.selectedSegment = recent ? 0 : 1
+        ranges.target = self; ranges.action = #selector(changeRange); ranges.selectedSegment = dateWindows.firstIndex(of: days) ?? 2
+        views.setAccessibilityLabel("Session grouping"); ranges.setAccessibilityLabel("Date range")
+        count.font = .systemFont(ofSize: 11); count.textColor = .secondaryLabelColor
+        bar.addArrangedSubview(views); bar.addArrangedSubview(ranges)
+        let spacer = NSView(); spacer.setContentHuggingPriority(.defaultLow, for: .horizontal); bar.addArrangedSubview(spacer); bar.addArrangedSubview(count)
+        stack.addArrangedSubview(bar); bar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("session")))
+        table.headerView = nil; table.backgroundColor = .clear; table.style = .fullWidth
+        table.dataSource = self; table.delegate = self; table.target = self; table.action = #selector(clicked)
+        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle; table.intercellSpacing = NSSize(width: 0, height: 2)
+        table.setAccessibilityLabel("Claude Code sessions")
+        scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.drawsBackground = false
+        stack.addArrangedSubview(scroll); scroll.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 240).isActive = true
+        empty.textColor = .secondaryLabelColor; empty.font = .systemFont(ofSize: 13)
+        empty.translatesAutoresizingMaskIntoConstraints = false; scroll.addSubview(empty)
+        NSLayoutConstraint.activate([empty.centerXAnchor.constraint(equalTo: scroll.centerXAnchor), empty.centerYAnchor.constraint(equalTo: scroll.centerYAnchor)])
+        message.font = .systemFont(ofSize: 11); message.textColor = .secondaryLabelColor
+        message.lineBreakMode = .byTruncatingTail; message.setAccessibilityLabel("Session status")
+        stack.addArrangedSubview(message); message.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        let footer = NSStackView(); footer.spacing = 8
+        let keys = NSTextField(labelWithString: "↵ Open   ⇧↵ New here   ⌘N New session   Tab View   ⌘←→ Range   Esc Close")
+        keys.font = .systemFont(ofSize: 10); keys.textColor = .secondaryLabelColor
+        footer.addArrangedSubview(keys)
+        let gear = NSButton(image: NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Settings")!, target: self, action: #selector(settingsClicked)); gear.isBordered = false
+        footer.addArrangedSubview(gear); stack.addArrangedSubview(footer)
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, self.panel.isVisible, !self.asking, event.window === self.panel else { return event }
+            return self.handle(event) ? nil : event
+        }
+    }
+    deinit { if let monitor { NSEvent.removeMonitor(monitor) }; timer?.invalidate() }
+    func apply(_ settings: Settings) {
+        self.settings = settings; days = settings.defaultDays; recent = !settings.folders
+        views.selectedSegment = recent ? 0 : 1
+        ranges.selectedSegment = dateWindows.firstIndex(of: days) ?? 2
+        if panel.isVisible { reload() }
+    }
+    func show(repeatedHotkey: Bool = false) {
+        if panel.isVisible {
+            if repeatedHotkey { newSession() } else { panel.makeKeyAndOrderFront(nil); panel.makeFirstResponder(search) }
+            return
+        }
+        generation += 1; sessions = []; search.stringValue = ""; reload()
+        empty.stringValue = "Loading sessions…"; message.stringValue = ""
+        let point = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { NSMouseInRect(point, $0.frame, false) } ?? NSScreen.main ?? NSScreen.screens[0]
+        let f = screen.visibleFrame, size = panel.frame.size
+        panel.setFrameOrigin(NSPoint(x: f.midX - size.width / 2, y: f.maxY - f.height * 0.18 - size.height))
+        let front = NSWorkspace.shared.frontmostApplication
+        previousApplication = front?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : front
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil); panel.makeFirstResponder(search)
+        refresh()
+        timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refresh() }
+    }
+    func hide() {
+        guard panel.isVisible, !asking else { return }
+        let wasActive = NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+        generation += 1; panel.orderOut(nil); timer?.invalidate(); timer = nil
+        if wasActive {
+            if let previousApplication { previousApplication.activate(options: []) }
+            else { NSApp.hide(nil) }
+        }
+        previousApplication = nil
+    }
+    func windowDidResignKey(_ notification: Notification) { if !asking { hide() } }
+    func refresh() {
+        guard !loading else { return }; loading = true
+        let request = generation
+        engine.perform({ service, _ in try service.collect(days: 0) }) { [weak self] result in
+            guard let self else { return }; self.loading = false
+            guard self.panel.isVisible, request == self.generation else {
+                if self.panel.isVisible { self.refresh() }; return
+            }
+            switch result {
+            case .success(let sessions):
+                self.sessions = sessions; self.reload()
+                self.message.stringValue = sessions.contains { $0.status == "unknown" } ? "Live status unavailable. Resuming is disabled; start clean or retry with ⌘R." : "Refreshes every 5 seconds · \(self.settings.hotkeyLabel) again starts a dated session"
+            case .failure(let error): self.message.stringValue = error.localizedDescription; self.empty.stringValue = "Couldn’t load sessions. Press ⌘R to retry."
+            }
+        }
+    }
+    func reload() {
+        let keep = selected?.id
+        let cutoff = days == 0 ? 0 : Date().timeIntervalSince1970 - Double(days) * 86400
+        rows = sessionRows(sessions.filter { $0.isLive || $0.mtime >= cutoff }, query: search.stringValue, recent: recent, tree: false)
+        table.reloadData(); count.stringValue = "\(rows.filter { $0.session != nil }.count) sessions"
+        empty.isHidden = rows.contains { $0.session != nil }; empty.stringValue = "No sessions in this range"
+        if let keep, let row = rows.firstIndex(where: { $0.session?.id == keep }) { select(row) }
+        else if let row = rows.firstIndex(where: { $0.session != nil }) { select(row) }
+    }
+    var selected: Session? { table.selectedRow >= 0 && table.selectedRow < rows.count ? rows[table.selectedRow].session : nil }
+    func select(_ row: Int) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); table.scrollRowToVisible(row) }
+    func move(_ delta: Int) {
+        let choices = rows.indices.filter { rows[$0].session != nil }
+        guard !choices.isEmpty else { return }
+        let current = choices.firstIndex(of: table.selectedRow) ?? 0
+        select(choices[min(max(0, current + delta), choices.count - 1)])
+    }
+    func handle(_ event: NSEvent) -> Bool {
+        let command = event.modifierFlags.contains(.command)
+        switch event.keyCode {
+        case 53: hide()
+        case 36, 76: activateSelected(fresh: event.modifierFlags.contains(.shift))
+        case 125: move(1)
+        case 126: move(-1)
+        case 121: move(10)
+        case 116: move(-10)
+        case 115: move(-rows.count)
+        case 119: move(rows.count)
+        case 48: recent.toggle(); views.selectedSegment = recent ? 0 : 1; reload()
+        case 123 where command, 124 where command:
+            days = cycleWindow(days, step: event.keyCode == 124 ? 1 : -1)
+            ranges.selectedSegment = dateWindows.firstIndex(of: days) ?? 2; reload()
+        case 45 where command: newSession()
+        case 15 where command: refresh()
+        case 43 where command: settingsClicked()
+        default: return false
+        }
+        return true
+    }
+    func controlTextDidChange(_ obj: Notification) { reload() }
+    @objc func changeView() { recent = views.selectedSegment == 0; reload(); panel.makeFirstResponder(search) }
+    @objc func changeRange() { days = dateWindows[ranges.selectedSegment]; reload(); panel.makeFirstResponder(search) }
+    @objc func clicked() { if table.clickedRow >= 0 { activateSelected(fresh: NSEvent.modifierFlags.contains(.shift)) } }
+    @objc func settingsClicked() { hide(); onSettings?() }
+    func activateSelected(fresh: Bool) {
+        guard let s = selected else { return }
+        if s.isLarge && !fresh {
+            asking = true
+            let alert = NSAlert(); alert.messageText = "Resume a large session?"
+            alert.informativeText = "\(s.turns) prompts\(s.cost.map { " · $\(Int($0.rounded())) recorded" } ?? ""). Resuming includes the saved conversation in future prompts. A clean session starts empty in \(shortPath(s.cwd))."
+            alert.addButton(withTitle: "Start clean here"); alert.addButton(withTitle: "Resume"); alert.addButton(withTitle: "Cancel")
+            alert.buttons.last?.keyEquivalent = "\u{1b}"
+            alert.beginSheetModal(for: panel) { [weak self] response in
+                guard let self else { return }; self.asking = false
+                if response == .alertFirstButtonReturn { self.activate(s, fresh: true) }
+                else if response == .alertSecondButtonReturn { self.activate(s, fresh: false) }
+                else { self.panel.makeFirstResponder(self.search) }
+            }
+        } else { activate(s, fresh: fresh) }
+    }
+    func activate(_ s: Session, fresh: Bool) {
+        hide()
+        engine.perform({ service, _ in try service.activate(s, fresh: fresh) }) { if case .failure(let error) = $0 { showError(error) } }
+    }
+    func newSession() {
+        guard !asking else { return }; hide()
+        let preferences = settings
+        let cli = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/ccs").path
+        engine.perform({ service, env in try NewSessions(service: service, settings: preferences, environment: env).start(cliPath: cli) }) { if case .failure(let error) = $0 { showError(error) } }
+    }
+    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { rows[row].session != nil }
+    func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { rows[row].session == nil }
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { rows[row].session == nil ? 26 : 46 }
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { PickerRow() }
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        if let s = rows[row].session { return SessionCell(session: s, recent: recent) }
+        let label = NSTextField(labelWithString: rows[row].label); label.font = .systemFont(ofSize: 11, weight: .semibold); label.textColor = .secondaryLabelColor; label.lineBreakMode = .byTruncatingMiddle
+        return label
+    }
+}
+
+private final class PickerRow: NSTableRowView {
+    override func drawSelection(in dirtyRect: NSRect) {
+        NSColor.controlAccentColor.withAlphaComponent(0.24).setFill()
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 0), xRadius: 7, yRadius: 7).fill()
+    }
+}
+
+private final class SessionCell: NSTableCellView {
+    init(session s: Session, recent: Bool) {
+        super.init(frame: .zero)
+        let icon = NSImageView(image: NSImage(systemSymbolName: s.status == "closed" ? "circle" : s.status == "unknown" ? "questionmark.circle" : "circle.fill", accessibilityDescription: s.status)!)
+        icon.contentTintColor = s.status == "idle" ? .systemGreen : s.status == "closed" ? .secondaryLabelColor : s.status == "unknown" ? .systemPurple : .systemOrange
+        let title = NSTextField(labelWithString: s.displayTitle); title.font = .systemFont(ofSize: 13, weight: .medium); title.lineBreakMode = .byTruncatingTail
+        let sub = NSTextField(labelWithString: [s.name.map { "[\($0)]" }, recent ? shortPath(s.cwd) : nil, s.recap.nonEmpty].compactMap { $0 }.joined(separator: " · "))
+        sub.font = .systemFont(ofSize: 11); sub.textColor = .secondaryLabelColor; sub.lineBreakMode = .byTruncatingTail
+        let text = NSStackView(views: [title, sub]); text.orientation = .vertical; text.alignment = .leading; text.spacing = 2
+        let stats = NSTextField(labelWithString: "\(s.turns)p\(s.cost.map { $0 > 0 ? " · $\(Int($0.rounded()))" : "" } ?? "")")
+        stats.font = .monospacedDigitSystemFont(ofSize: 11, weight: s.isLarge ? .semibold : .regular); stats.textColor = s.isLarge ? .systemPurple : .secondaryLabelColor
+        let age = NSTextField(labelWithString: ageString(s.mtime)); age.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular); age.textColor = .secondaryLabelColor; age.alignment = .right
+        for view in [icon, text, stats, age] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
+        NSLayoutConstraint.activate([icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8), icon.centerYAnchor.constraint(equalTo: centerYAnchor), icon.widthAnchor.constraint(equalToConstant: 10), icon.heightAnchor.constraint(equalToConstant: 10),
+            text.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 10), text.centerYAnchor.constraint(equalTo: centerYAnchor),
+            text.trailingAnchor.constraint(lessThanOrEqualTo: stats.leadingAnchor, constant: -12),
+            age.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8), age.centerYAnchor.constraint(equalTo: centerYAnchor), age.widthAnchor.constraint(equalToConstant: 36),
+            stats.trailingAnchor.constraint(equalTo: age.leadingAnchor, constant: -10), stats.centerYAnchor.constraint(equalTo: centerYAnchor)])
+        stats.setContentCompressionResistancePriority(.required, for: .horizontal)
+        setAccessibilityLabel("\(s.displayTitle), \(s.status), \(shortPath(s.cwd)), \(s.turns) prompts")
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
+private extension String { var nonEmpty: String? { isEmpty ? nil : self } }

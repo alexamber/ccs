@@ -244,5 +244,89 @@ class SessionsTest(unittest.TestCase):
             self.assertEqual(installed.read_text(), "previous installation")
 
 
+class NewSessionTest(unittest.TestCase):
+    def test_folders_are_numbered_per_day_and_never_reused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "base"
+            with patch.object(ccs, "prune"):
+                self.assertEqual(ccs.make_new_dir(root, "2026-11-05").name, "2026-11-05-1")
+                self.assertEqual(ccs.make_new_dir(root, "2026-11-05").name, "2026-11-05-2")
+                (root / "2026-11-05-9").mkdir()
+                self.assertEqual(ccs.make_new_dir(root, "2026-11-05").name, "2026-11-05-10")
+                self.assertEqual(ccs.make_new_dir(root, "2026-11-06").name, "2026-11-06-1")
+                real_mkdir = Path.mkdir
+                def lose_race(path, *args, **kwargs):
+                    if path.name == "2026-11-06-2":
+                        real_mkdir(path)
+                    return real_mkdir(path, *args, **kwargs)
+                with patch.object(ccs.Path, "mkdir", lose_race):
+                    self.assertEqual(ccs.make_new_dir(root, "2026-11-06").name, "2026-11-06-3")
+
+    def test_prune_removes_only_unused_empty_dated_folders(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            names = ("2026-11-01-1", "2026-11-01-2", "2026-11-01-3", "2026-11-01-4", "2026-11-01-5", "notes")
+            for name in names:
+                (root / name).mkdir()
+            (root / "2026-11-01-2" / "file.txt").write_text("kept")
+            old = time.time() - 2 * ccs.PRUNE_AFTER
+            for name in ("2026-11-01-1", "2026-11-01-2", "2026-11-01-3", "2026-11-01-5", "notes"):
+                os.utime(root / name, (old, old))
+            used = {"x": session(cwd=str(root / "2026-11-01-3"))}
+            with patch.object(ccs, "load_index", return_value=used), \
+                    patch.object(ccs, "busy_dirs", return_value={str(root / "2026-11-01-5")}):
+                ccs.prune(list(root.iterdir()), ccs.PRUNE_AFTER)
+            self.assertEqual(sorted(p.name for p in root.iterdir()),
+                             ["2026-11-01-2", "2026-11-01-3", "2026-11-01-4", "2026-11-01-5", "notes"])
+            with patch.object(ccs, "load_index", return_value={}), patch.object(ccs, "busy_dirs", return_value=None):
+                ccs.prune(list(root.iterdir()), 0)
+            self.assertIn("2026-11-01-4", [p.name for p in root.iterdir()])
+
+    def test_busy_dirs_reads_process_working_directories(self):
+        out = "p1\nfcwd\nn/\np2\nfcwd\nn/Users/me/it's here\n"
+        with patch.object(ccs.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, out, "")):
+            self.assertEqual(ccs.busy_dirs(), {"/", "/Users/me/it's here"})
+        for result in (subprocess.CompletedProcess([], 1, "", "error"), OSError("missing")):
+            with patch.object(ccs.subprocess, "run", side_effect=[result]):
+                self.assertIsNone(ccs.busy_dirs())
+
+    def test_prune_command_removes_an_unused_folder_and_keeps_one_in_use(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            unused, in_use = home / "2026-11-05-1", home / "2026-11-05-2"
+            unused.mkdir()
+            in_use.mkdir()
+            holder = subprocess.Popen(["sleep", "30"], cwd=in_use)
+            try:
+                for folder in (unused, in_use):
+                    subprocess.run([str(ROOT / "ccs"), "--prune", str(folder)], check=True,
+                                   env={**os.environ, "HOME": str(home)}, capture_output=True)
+            finally:
+                holder.kill()
+                holder.wait()
+            self.assertFalse(unused.exists())
+            self.assertTrue(in_use.exists())
+
+    def test_new_session_uses_configured_root_and_cleans_up_on_failure(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {"CCS_NEW_DIR": str(Path(directory) / "it's mine")}), \
+                patch.object(ccs, "load_index", return_value={}), \
+                patch.object(ccs.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+            path, error = ccs.new_session()
+            self.assertIsNone(error)
+            self.assertEqual(path.parent, Path(directory) / "it's mine")
+            self.assertTrue(path.is_dir())
+            self.assertEqual(shlex.split(run.call_args.args[0][-1]),
+                             ["cd", str(path), "&&", "claude;", "cd;", str(ROOT / "ccs"), "--prune", str(path)])
+            run.return_value = subprocess.CompletedProcess([], 1, "", "Permission denied")
+            path, error = ccs.new_session()
+            self.assertEqual(error, "Permission denied")
+            self.assertFalse(path.exists())
+
+    def test_default_root(self):
+        with patch.dict(os.environ, {"HOME": "/u", "CCS_NEW_DIR": ""}):
+            self.assertEqual(ccs.new_root(), Path("/u/ccs-sessions"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,6 @@
 -- Optional Spotlight-style ccs switcher for Hammerspoon.
--- Install/configure with `ccs --install-hotkey`; Option-Space opens the picker.
+-- Install/configure with `ccs --install-hotkey`; Option-Space opens the picker, and pressing it
+-- again starts a new session in a dated folder.
 
 local M = {}
 
@@ -68,7 +69,7 @@ kbd + kbd { margin-left: -1px; }
   <span id="count"></span>
 </div>
 <div id="list"></div>
-<div id="keys"><span><kbd>Tab</kbd> Recent / Folders</span><span><kbd>⌘←</kbd><kbd>⌘→</kbd> Range</span><span><kbd>↵</kbd> Open</span><span><kbd>⇧↵</kbd> New here</span><span><kbd>esc</kbd> Close</span></div>
+<div id="keys"><span><kbd>Tab</kbd> Recent / Folders</span><span><kbd>⌘←</kbd><kbd>⌘→</kbd> Range</span><span><kbd>↵</kbd> Open</span><span><kbd>⇧↵</kbd> New here</span><span><kbd>⌥Space</kbd> New session</span><span><kbd>esc</kbd> Close</span></div>
 <div id="ask" hidden><div class="box">
   <div id="askTitle"></div><div id="askText"></div>
   <div class="choices"><button data-fresh="1">Start clean here</button><button data-fresh="0">Resume</button></div>
@@ -200,14 +201,17 @@ local tasks, ready, generation, listing = {}, false, 0, false
 -- to find ccs and the claude command it calls.
 local function loadEnv()
   if env then return true end
-  local out = hs.execute([[printf '@@%s@@%s@@' "$PATH" "$(/usr/bin/which ccs)"]], true) or ""
-  local path, bin = out:match("@@(.-)@@(.-)@@")
+  -- hs.execute(cmd, true) wraps cmd in double quotes, so the outer /bin/sh would expand these variables
+  -- from Hammerspoon's own environment; single-quoting hands them to the login shell instead.
+  local probe = [[printf '@@%s@@%s@@%s@@' "$PATH" "$(/usr/bin/which ccs)" "$CCS_NEW_DIR"]]
+  local out = hs.execute((os.getenv("SHELL") or "/bin/zsh") .. " -l -i -c '" .. probe:gsub("'", [['\'']]) .. "'") or ""
+  local path, bin, newDir = out:match("@@(.-)@@(.-)@@(.-)@@")
   if not bin or bin == "" then
     hs.alert.show("ccs was not found on your shell PATH")
     return false
   end
   env = { PATH = path, HOME = os.getenv("HOME"), USER = os.getenv("USER"),
-          LANG = "en_US.UTF-8", TMPDIR = os.getenv("TMPDIR") }
+          LANG = "en_US.UTF-8", TMPDIR = os.getenv("TMPDIR"), CCS_NEW_DIR = newDir ~= "" and newDir or nil }
   ccsPath = bin
   return true
 end
@@ -272,10 +276,17 @@ local function onMessage(message)
   end
 end
 
+local function newSession()
+  hide()
+  run({ "--new" }, function(code, out, err)
+    if code ~= 0 then hs.alert.show("ccs: " .. (err ~= "" and err or out)) end
+  end)
+end
+
 function M.show()
   if not panel then return end
   if not loadEnv() then return end
-  if panel:isVisible() then return hide() end
+  if panel:isVisible() then return newSession() end
   generation = generation + 1
   local f = hs.screen.mainScreen():frame()
   panel:frame({ x = f.x + (f.w - WIDTH) / 2, y = f.y + f.h * 0.18, w = WIDTH, h = HEIGHT })
@@ -329,6 +340,7 @@ function M.start(opts)
   -- these make sure it can still be dismissed.
   escape = hs.hotkey.modal.new()
   escape:bind({}, "escape", function() panel:evaluateJavaScript("onEscape()") end)
+  escape:bind({ "cmd" }, "n", newSession)
   watcher = hs.application.watcher.new(function(name, event)
     if event == hs.application.watcher.activated and name ~= "Hammerspoon" then hide() end
   end):start()
