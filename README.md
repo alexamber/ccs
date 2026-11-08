@@ -8,10 +8,6 @@ CCS requires macOS 14 or later, Terminal.app, and at least one installed command
 `claude` or `codex`.
 The Swift app and CLI share one engine. Neither Python nor Hammerspoon is needed.
 
-![CCS demo: browse Claude and Codex sessions, search, switch to folders, filter providers, and open keyboard shortcuts](docs/media/ccs-demo.gif)
-
-A 14-second walkthrough using sample sessions. [Watch the MP4](docs/media/ccs-demo.mp4).
-
 ## Install
 
 Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v1.0.1/CCS-1.0.1-macos-universal.dmg),
