@@ -2,6 +2,12 @@ import AppKit
 import CCSCore
 import Foundation
 
+struct HistorySnapshot {
+    let sessions: [Session]
+    let issues: [Provider: String]
+    let installedProviders: [Provider]
+}
+
 final class Engine {
     // Each lane owns its service and RPC connection. A history refresh cannot
     // queue ahead of opening a session, and concurrent RPC reads never interleave.
@@ -16,6 +22,15 @@ final class Engine {
     private var environment = [String: String]()
     init(environment: @escaping () -> [String: String] = ProcessRunner.loginEnvironment) {
         bootstrap.async { self.environment = environment() }
+    }
+
+    func loadHistory(completion: @escaping (Result<HistorySnapshot, Error>) -> Void) {
+        perform(background: true, { service, env in
+            let enabled = Settings.load().resolvingProviders(environment: env).enabledProviders
+            let sessions = try service.collect(days: 0, provider: .all, enabledProviders: enabled)
+            return HistorySnapshot(sessions: sessions, issues: service.issues,
+                                   installedProviders: enabled.filter { $0.isInstalled(environment: env) })
+        }, completion: completion)
     }
 
     func perform<T>(background: Bool = false, _ work: @escaping (SessionService, [String: String]) throws -> T,

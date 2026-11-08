@@ -67,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             do {
                 let value = try result.get()
                 try self.updateSettings(value, save: !value.needsProviderSetup)
+                self.popup.refresh()
                 if !login { self.popup.show() }
             } catch { showError(error) }
         }

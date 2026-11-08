@@ -21,6 +21,12 @@ and history refreshes. Each queue owns its RPC connection; UI callbacks return t
 the main queue. Abandoned-folder cleanup runs in a separate CLI helper. The CLI calls the same core directly. Both use the same settings
 and metadata cache; neither executable depends on Hammerspoon or Python.
 
+The picker preloads history at startup and retains its latest snapshot in memory.
+Reopening immediately displays searchable rows while refreshing in the background;
+closing the picker does not discard an in-flight result. Provider changes invalidate
+older requests. No periodic polling runs while hidden, and activation still checks
+current session state before opening it. The first load after launch may take longer.
+
 Session metadata comes from Claude's local transcripts. Live status is refreshed
 from `claude agents --json`, including immediately before activation. An unknown
 live state prevents Claude resume. Existing Terminal tabs are matched by process TTY;

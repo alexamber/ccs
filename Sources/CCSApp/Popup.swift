@@ -20,12 +20,17 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     private let empty = NSTextField(labelWithString: "Loading sessions…")
     private var sessions = [Session](), rows = [SessionRow](), timer: Timer?, monitor: Any?
     private var generation = 0, loading = false, asking = false
+    private var hasLoaded = false
+    private var refreshError: String?
+    private let loadHistory: (@escaping (Result<HistorySnapshot, Error>) -> Void) -> Void
     private var launching = false, issues = [Provider: String]()
     private var installedProviders: [Provider]?
     private var previousApplication: NSRunningApplication?
     private var days: Int, recent: Bool
-    init(engine: Engine, settings: Settings) {
+    init(engine: Engine, settings: Settings,
+         loadHistory: ((@escaping (Result<HistorySnapshot, Error>) -> Void) -> Void)? = nil) {
         self.engine = engine; self.settings = settings
+        self.loadHistory = loadHistory ?? engine.loadHistory
         days = settings.defaultDays; recent = !settings.folders
         panel = PickerPanel(contentRect: NSRect(x: 0, y: 0, width: 700, height: 470), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         super.init()
@@ -129,7 +134,8 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         newProviderValue.isHidden = settings.enabledProviders.count > 1
         newProviderValue.stringValue = "New: " + settings.newProvider.title
         shortcutsPopover?.close()
-        if panel.isVisible { reload(); if sourcesChanged { refresh() } }
+        if panel.isVisible { reload() }
+        if sourcesChanged { refresh() }
     }
     func show(repeatedHotkey: Bool = false) {
         guard !launching else { return }
@@ -137,8 +143,8 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
             if repeatedHotkey { newSession() } else { panel.makeKeyAndOrderFront(nil) }
             return
         }
-        generation += 1; sessions = []; search.stringValue = ""; reload()
-        empty.stringValue = "Loading sessions…"; message.stringValue = ""
+        // Keep the last snapshot searchable while fresh metadata is collected.
+        search.stringValue = ""; reload()
         let point = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(point, $0.frame, false) } ?? NSScreen.main ?? NSScreen.screens[0]
         let f = screen.visibleFrame, size = panel.frame.size
@@ -154,7 +160,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         guard panel.isVisible, !asking else { return }
         let wasActive = NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier
         shortcutsPopover?.close()
-        generation += 1; panel.orderOut(nil); timer?.invalidate(); timer = nil
+        panel.orderOut(nil); timer?.invalidate(); timer = nil
         if restoreFocus && wasActive {
             if let previousApplication { previousApplication.activate(options: []) }
             else { NSApp.hide(nil) }
@@ -169,21 +175,22 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     }
     func refresh() {
         guard !loading else { return }; loading = true
+        refreshError = nil
+        if panel.isVisible { reload() }
         let request = generation
-        engine.perform(background: true, { service, env in
-            let enabled = Settings.load().resolvingProviders(environment: env).enabledProviders
-            let sessions = try service.collect(days: 0, provider: .all, enabledProviders: enabled)
-            return (sessions, service.issues, enabled.filter { $0.isInstalled(environment: env) })
-        }) { [weak self] result in
+        loadHistory { [weak self] result in
             guard let self else { return }; self.loading = false
-            guard self.panel.isVisible, request == self.generation else {
-                if self.panel.isVisible { self.refresh() }; return
+            guard request == self.generation else {
+                self.refresh(); return
             }
             switch result {
             case .success(let payload):
-                self.sessions = payload.0; self.issues = payload.1; self.installedProviders = payload.2; self.reload()
-            case .failure(let error): self.message.stringValue = error.localizedDescription; self.empty.stringValue = "Couldn’t load sessions. Press ⌘R to retry."
+                self.sessions = payload.sessions; self.issues = payload.issues
+                self.installedProviders = payload.installedProviders; self.hasLoaded = true
+            case .failure(let error): self.refreshError = error.localizedDescription
             }
+            // Finishing while hidden still warms the next opening.
+            self.reload()
         }
     }
     func reload() {
@@ -195,8 +202,11 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         if sessions.isEmpty, let installedProviders, installedProviders.isEmpty {
             empty.stringValue = "Install " + settings.enabledProviders.map { $0 == .claude ? "Claude Code" : "Codex" }.joined(separator: " or ") + " to get started"
         }
+        if !hasLoaded { empty.stringValue = refreshError == nil ? "Loading sessions…" : "Couldn’t load sessions. Press ⌘R to retry." }
         let warnings = issues.filter { settings.enabledProviders.contains($0.key) && settings.providerFilter.includes($0.key) }.sorted { $0.key.rawValue < $1.key.rawValue }.map(\.value)
         message.stringValue = warnings.isEmpty ? "Refreshes every 5 seconds · \(settings.hotkeyLabel) again starts a new \(settings.newProvider.title) session" : warnings.joined(separator: " · ")
+        if let refreshError { message.stringValue = (hasLoaded ? "Showing previous results · " : "") + refreshError }
+        else if loading, hasLoaded { message.stringValue = "Updating sessions… · " + message.stringValue }
         message.toolTip = message.stringValue
         if let keep, let row = rows.firstIndex(where: { $0.session?.key == keep }) { select(row) }
         else if let row = rows.firstIndex(where: { $0.session != nil }) { select(row) }
