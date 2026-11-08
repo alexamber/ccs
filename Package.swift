@@ -15,5 +15,6 @@ let package = Package(
         .executableTarget(name: "CCSApp", dependencies: ["CCSCore"],
                           linkerSettings: [.linkedFramework("Carbon")]),
         .testTarget(name: "CCSCoreTests", dependencies: ["CCSCore"]),
+        .testTarget(name: "CCSAppTests", dependencies: ["CCSApp"]),
     ]
 )

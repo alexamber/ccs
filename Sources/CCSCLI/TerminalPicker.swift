@@ -4,15 +4,18 @@ import Foundation
 
 final class TerminalPicker {
     let service: SessionService
-    let newSessions: NewSessions
+    var newSessions: NewSessions
+    private var settings: Settings
+    private let explicitProvider: Bool
     let cliPath: String
     var provider: ProviderFilter, newProvider: Provider
-    let enabledProviders: [Provider]
-    let newProviderChoices: [Provider]
+    var enabledProviders: [Provider]
+    var newProviderChoices: [Provider]
     var days: Int, recent: Bool, watch: Int
     var sessions = [Session](), query = "", selected = 0, top = 0, message = ""
 
-    init(service: SessionService, settings: Settings, days: Int, recent: Bool, watch: Int, cliPath: String, provider: ProviderFilter, enabledProviders: [Provider]) {
+    init(service: SessionService, settings: Settings, days: Int, recent: Bool, watch: Int, cliPath: String, provider: ProviderFilter, enabledProviders: [Provider], explicitProvider: Bool = false) {
+        self.settings = settings; self.explicitProvider = explicitProvider
         self.service = service; self.newSessions = NewSessions(service: service, settings: settings)
         self.enabledProviders = enabledProviders; self.newProviderChoices = settings.enabledProviders
         self.provider = provider; self.newProvider = settings.newProvider
@@ -25,8 +28,23 @@ final class TerminalPicker {
         sessions = try service.collect(days: days, provider: provider, enabledProviders: enabledProviders)
         guard ccs_terminal_start() == 0 else { throw CCSError.message("Could not initialize the terminal picker.") }
         defer { ccs_terminal_end() }
+        var nextSettingsCheck = Date()
         var nextRefresh = Date().addingTimeInterval(Double(watch))
         while true {
+            if Date() >= nextSettingsCheck {
+                let updated = Settings.load().resolvingProviders(environment: ProcessInfo.processInfo.environment)
+                if updated != settings {
+                    if !explicitProvider { enabledProviders = updated.enabledProviders; provider = updated.providerFilter }
+                    newProviderChoices = updated.enabledProviders; newProvider = updated.newProvider
+                    if updated.defaultDays != settings.defaultDays { days = updated.defaultDays }
+                    if updated.folders != settings.folders { recent = !updated.folders }
+                    settings = updated; newSessions = NewSessions(service: service, settings: updated)
+                    do { sessions = try service.collect(days: days, provider: provider, enabledProviders: enabledProviders) }
+                    catch { sessions = []; message = error.localizedDescription }
+                    selected = 0; top = 0
+                }
+                nextSettingsCheck = Date().addingTimeInterval(1)
+            }
             var h: Int32 = 0, w: Int32 = 0; ccs_terminal_size(&h, &w)
             let height = Int(h), width = Int(w)
             let rows = sessionRows(sessions, query: query, recent: recent)
@@ -35,7 +53,7 @@ final class TerminalPicker {
             let current = choices.isEmpty ? -1 : choices[selected]
             if watch > 0 && Date() >= nextRefresh {
                 let keep = current >= 0 ? rows[current].session?.key : nil
-                do { sessions = try service.collect(days: days, provider: provider, enabledProviders: enabledProviders) } catch { message = error.localizedDescription }
+                do { sessions = try service.collect(days: days, provider: provider, enabledProviders: enabledProviders) } catch { sessions = []; message = error.localizedDescription }
                 let refreshed = sessionRows(sessions, query: query, recent: recent).compactMap(\.session)
                 if let keep, let i = refreshed.firstIndex(where: { $0.key == keep }) { selected = i }
                 nextRefresh = Date().addingTimeInterval(Double(watch)); continue
@@ -77,11 +95,11 @@ final class TerminalPicker {
                 put(height - 1, 1, message.isEmpty ? (issue ?? "↵ open · ^O new here · ^T new session · ^F filter · ^B new provider · Tab view · ^R refresh · ^C quit") : message, width - 2, message.isEmpty ? 2 : 32)
             }
             ccs_terminal_refresh()
-            let delay = watch > 0 ? max(1, Int(nextRefresh.timeIntervalSinceNow * 1000)) : -1
+            let delay = watch > 0 ? Int(min(1000, max(1, nextRefresh.timeIntervalSinceNow * 1000))) : 1000
             let key = Int(ccs_terminal_key(Int32(delay)))
-            message = ""
             if key == 3 { return }
             if key == CCS_TIMEOUT || key == CCS_RESIZE { continue }
+            message = ""
             if height < 6 || width < 12 { continue }
             switch key {
             case CCS_UP, 16: selected = max(0, selected - 1)
@@ -92,13 +110,13 @@ final class TerminalPicker {
             case CCS_END: selected = max(0, choices.count - 1)
             case CCS_LEFT, CCS_RIGHT:
                 days = cycleWindow(days, step: key == CCS_RIGHT ? 1 : -1)
-                do { sessions = try service.collect(days: days, provider: provider, enabledProviders: enabledProviders) } catch { message = error.localizedDescription }
+                do { sessions = try service.collect(days: days, provider: provider, enabledProviders: enabledProviders) } catch { sessions = []; message = error.localizedDescription }
                 selected = 0; top = 0
             case 9: recent.toggle(); selected = 0; top = 0
             case 27: query = ""; selected = 0
             case 127, 8: if !query.isEmpty { query.removeLast() }; selected = 0
             case 18:
-                do { sessions = try service.collect(days: days, provider: provider, enabledProviders: enabledProviders) } catch { message = error.localizedDescription }
+                do { sessions = try service.collect(days: days, provider: provider, enabledProviders: enabledProviders) } catch { sessions = []; message = error.localizedDescription }
             case 6:
                 let order = ProviderFilter.allCases.filter { filter in filter == .all || enabledProviders.contains { filter.includes($0) } }
                 provider = order[((order.firstIndex(of: provider) ?? 0) + 1) % order.count]
@@ -108,7 +126,7 @@ final class TerminalPicker {
                         settings.providerFilter = provider; try settings.save()
                     }
                     sessions = try service.collect(days: days, provider: provider, enabledProviders: enabledProviders)
-                } catch { message = error.localizedDescription }
+                } catch { sessions = []; message = error.localizedDescription }
                 selected = 0; top = 0
             case 2:
                 guard newProviderChoices.count > 1 else { continue }
@@ -131,12 +149,12 @@ final class TerminalPicker {
         }
     }
     func confirm(_ s: Session, height: Int, width: Int) -> Bool? {
-        var fresh = true
+        var fresh = false
         while true {
             ccs_terminal_clear()
-            put(1, 1, "Large session: \(s.turns) prompts\(s.cost.map { " · $\(Int($0.rounded()))" } ?? "")", width - 2, 33)
+            put(1, 1, "Large session: \(s.turns) prompts\(s.cost.map { " · $\(formattedCost($0))" } ?? "")", width - 2, 33)
             put(2, 1, "Resuming includes the saved conversation in future prompts.", width - 2)
-            put(3, 1, "Start clean in " + shortPath(s.cwd) + "?", width - 2)
+            put(3, 1, "Resume or start clean in " + shortPath(s.cwd) + "?", width - 2)
             put(height - 3, 1, " Start clean here ", width - 2, fresh ? 4 : 0)
             put(height - 2, 1, " Resume ", width - 2, fresh ? 0 : 4)
             put(height - 1, 1, "←→ choose · Enter confirm · n clean · r resume · Esc cancel", width - 2, 2)

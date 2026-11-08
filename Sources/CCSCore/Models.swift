@@ -50,7 +50,7 @@ public struct Session: Codable, Identifiable {
     public var isLive: Bool { live != nil || (provider == .codex && ["idle", "active", "waiting", "error"].contains(status)) }
     public var isSaved: Bool { status == "closed" || status == "saved" }
     public var statistics: String {
-        provider == .claude ? "\(turns)p\(cost.map { $0 > 0 ? " · $\(Int($0.rounded()))" : "" } ?? "")" : ""
+        provider == .claude ? "\(turns)p\(cost.map { $0 > 0 ? " · $\(formattedCost($0))" : "" } ?? "")" : ""
     }
     public func matches(_ query: String) -> Bool {
         query.isEmpty || [cwd, title, name ?? "", recap, last, prompts, status, provider.title]
@@ -70,7 +70,7 @@ public struct ExportSession: Encodable {
 
     public init(_ s: Session, home: String) {
         id = s.id; dir = shortPath(s.cwd, home: home); title = s.title; name = s.name
-        status = s.status; age = ageString(s.mtime); mtime = Int(s.mtime)
+        status = s.status; age = ageString(s.mtime); mtime = Int(exactly: s.mtime.rounded(.towardZero)) ?? 0
         recap = s.recap; last = s.last; turns = s.provider == .claude ? s.turns : nil; cost = s.cost; large = s.isLarge
     }
 
@@ -92,9 +92,10 @@ public func shortPath(_ path: String, home: String = CCSPaths.home) -> String {
 }
 
 public func ageString(_ timestamp: Double, now: Double = Date().timeIntervalSince1970) -> String {
+    guard timestamp.isFinite, timestamp >= 0 else { return "unknown" }
     let seconds = max(0, now - timestamp)
     for (unit, size) in [("d", 86400.0), ("h", 3600.0), ("m", 60.0)] {
-        if seconds >= size { return "\(Int(seconds / size))\(unit)" }
+        if seconds >= size { return "\(String(format: "%.0f", (seconds / size).rounded(.down)))\(unit)" }
     }
     return "now"
 }
@@ -109,4 +110,10 @@ public func cycleWindow(_ days: Int, step: Int) -> Int {
 public enum CCSError: LocalizedError {
     case message(String)
     public var errorDescription: String? { if case .message(let text) = self { return text }; return nil }
+}
+
+// Decimal formatting avoids trapping on malformed values outside the Int range.
+public func formattedCost(_ value: Double) -> String {
+    guard value.isFinite, value >= 0 else { return "?" }
+    return String(format: value < 1e15 ? "%.0f" : "%.2g", locale: Locale(identifier: "en_US_POSIX"), value.rounded())
 }

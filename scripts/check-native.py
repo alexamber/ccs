@@ -94,6 +94,18 @@ with tempfile.TemporaryDirectory(prefix="ccs-native-check-") as temp:
     via_path = subprocess.run(["ccs", "--version"], env=installed_env, capture_output=True, text=True, timeout=20)
     assert via_path.returncode == 0 and via_path.stdout.strip() == "ccs " + version, via_path
     run("--install-cli", "--json", code=2)
+    # Partial metadata must remain visible for browsing, but never look like a
+    # successful complete export/list or authorize deleting an unknown folder.
+    partial = project / "partial.jsonl"
+    partial.write_text('{"type":"user","cwd":"/unfinished')
+    failure = subprocess.run([str(binary), "--provider", "claude", "--list"], env=env, capture_output=True, text=True, timeout=20)
+    assert failure.returncode == 1 and "Authentication fix" in failure.stdout and failure.stderr.strip(), failure
+    run("--provider", "claude", "--json", code=1)
+    partial.unlink()
+    extreme = project / "extreme.jsonl"
+    extreme.write_text('{"type":"user","cwd":"/tmp/extreme"}\n{"type":"cost-state","totalCostUSD":1e100}')
+    assert "[Claude]" in run("--provider", "claude", "--list")
+    extreme.unlink()
     print("CLI metadata, list, error statuses, installation, version, and flags: passed", flush=True)
 
     unused, in_use = home / "2026-11-08-1", home / "2026-11-08-2"
@@ -108,6 +120,10 @@ with tempfile.TemporaryDirectory(prefix="ccs-native-check-") as temp:
         run("--prune", str(archived)); run("--prune", str(subagent))
         assert archived.exists() and subagent.exists(), "A saved Codex folder was removed"
         env["CCS_TEST_CODEX_FAILURE"] = "1"
+        listing = subprocess.run([str(binary), "--provider", "codex", "--list"], env=env, capture_output=True, text=True, timeout=20)
+        assert listing.returncode == 1 and not listing.stdout and "Codex history unavailable" in listing.stderr, listing
+        listing = subprocess.run([str(binary), "--provider", "all", "--list"], env=env, capture_output=True, text=True, timeout=20)
+        assert listing.returncode == 1 and "Authentication fix" in listing.stdout and "Codex history unavailable" in listing.stderr, listing
         retry = home / "2026-11-08-5"; retry.mkdir()
         run("--prune", str(retry), code=1)
         assert retry.exists(), "A folder was pruned when Codex history could not be read"
@@ -149,9 +165,9 @@ with tempfile.TemporaryDirectory(prefix="ccs-native-check-") as temp:
         preferences = json.loads(Path(env["CCS_SETTINGS_PATH"]).read_text())
         preferences.update(enabledProviders=["claude"], providerFilter="claude", newProvider="claude")
         Path(env["CCS_SETTINGS_PATH"]).write_text(json.dumps(preferences))
-        # The open TUI can still view both providers as a one-command override.
-        # Codex → All → Claude → Codex must not save disabled Codex as the app filter.
-        os.write(master, b"\x06\x06\x06\x03")
+        # An already-open saved-mode TUI follows the new provider settings.
+        output.clear(); read_until(b"Authentication fix")
+        os.write(master, b"\x02\x03")
         # Continue draining the PTY while curses restores terminal modes. A
         # parent waiting without draining can block the child's final redraw.
         deadline = time.monotonic() + 5
@@ -167,4 +183,22 @@ with tempfile.TemporaryDirectory(prefix="ccs-native-check-") as temp:
         if process.poll() is None:
             process.kill(); process.wait(timeout=5)
         os.close(master)
-    print("Native terminal picker, search, Escape, watch, and clean exit: passed")
+    # Explicit --provider remains an override when the saved app enables only Claude.
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 90, 0, 0))
+    process = subprocess.Popen([str(binary), "--provider", "all", "--watch", "9223372036854775807"], stdin=slave, stdout=slave, stderr=slave, env=env)
+    os.close(slave); output.clear()
+    try:
+        read_until(b"Codex authentication review")
+        os.write(master, b"\x06\x06\x03")  # All → Claude → disabled Codex; only Claude can persist.
+        deadline = time.monotonic() + 5
+        while process.poll() is None and time.monotonic() < deadline:
+            if select.select([master], [], [], 0.1)[0]:
+                try: os.read(master, 65536)
+                except OSError: break
+        assert process.wait(timeout=1) == 0
+        assert json.loads(preference_path.read_text())["providerFilter"] == "claude"
+    finally:
+        if process.poll() is None: process.kill(); process.wait(timeout=5)
+        os.close(master)
+    print("Native terminal picker, search, Escape, settings sync, explicit override, watch, and clean exit: passed")

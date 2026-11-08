@@ -74,7 +74,10 @@ final class CodexTests: XCTestCase {
         8 0 ttys007 codex --remote ws://remote-host:4500 resume abc
         9 0 ttys008 codex --remote=unix:///tmp/another-server resume abc
         """
-        XCTAssertEqual(CodexProvider.candidateTTYs(id: "abc", processList: processes, localSocketPath: "/tmp/socket"), ["ttys001", "ttys006"])
+        XCTAssertEqual(CodexProvider.candidateTTYs(id: "abc", processList: processes, localSocketPath: "/tmp/socket", arguments: { pid in
+            let line = processes.split(separator: "\n").first { $0.split(separator: " ").first == Substring(String(pid)) }!
+            return shellWords(String(line.split(maxSplits: 3, whereSeparator: { $0.isWhitespace })[3]))
+        }), ["ttys001", "ttys006"])
     }
     func testCodexActivationFocusesExactTabOrOpensSameConversationWithoutATurn() throws {
         let entry = record("abc", cwd: "/tmp/it's here", status: "idle")
@@ -88,15 +91,15 @@ final class CodexTests: XCTestCase {
         let service = SessionService(runner: { path, args, script, _ in
             if path == "/bin/ps" { return CommandResult(out: "1 0 ttys001 codex resume abc") }
             scripts.append((script ?? "", args)); return CommandResult(out: found ? "ok\n" : "missing\n")
-        }, codex: codex)
+        }, codex: codex, arguments: { _ in ["codex", "resume", "abc"] })
         let session = try CodexProvider.session(entry, authoritative: true)
         try service.activate(session)
         XCTAssertEqual(scripts.count, 1); XCTAssertEqual(scripts[0].0, SessionService.focusScript)
         found = false; scripts.removeAll(); try service.activate(session)
         XCTAssertEqual(scripts.last?.0, SessionService.launchScript)
-        XCTAssertEqual(scripts.last?.1.last, "codex --cd '/tmp/it'\\''s here' resume 'abc'")
+        XCTAssertEqual(scripts.last?.1.last, codex.launchCommand + " --cd '/tmp/it'\\''s here' resume 'abc'")
         scripts.removeAll(); try service.activate(session, fresh: true)
-        XCTAssertEqual(scripts.last?.1.last, "cd '/tmp/it'\\''s here' && codex")
+        XCTAssertEqual(scripts.last?.1.last, "cd '/tmp/it'\\''s here' && " + codex.launchCommand)
         XCTAssertTrue(client.calls.allSatisfy { $0.0 == "thread/read" })
     }
     func testCleanupPreservesArchivedAndSubagentFoldersAndFailsClosed() throws {
@@ -197,4 +200,74 @@ final class CodexTests: XCTestCase {
         XCTAssertEqual(loaded.providerFilter, .all); XCTAssertEqual(loaded.newProvider, .claude)
         XCTAssertEqual(loaded.enabledProviders, [.claude]); XCTAssertEqual(loaded.defaultDays, 30)
     }
+    func testKernelArgumentsPreserveSpacesApostrophesAndEmptyArguments() throws {
+        let root = try temporary(), binary = root.appendingPathComponent("codex")
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Fixtures/hold-args.c")
+        let compiled = try ProcessRunner().run("/usr/bin/clang", [source.path, "-o", binary.path])
+        XCTAssertEqual(compiled.code, 0, compiled.err)
+        let child = Process(); child.executableURL = binary
+        child.arguments = ["--cd", "/tmp/it's here", "resume", "abc", ""]
+        try child.run(); defer { child.terminate(); child.waitUntilExit() }
+        let words = try XCTUnwrap(ProcessArguments.read(child.processIdentifier))
+        XCTAssertEqual(Array(words.dropFirst()), child.arguments!)
+        // This is the exact, unescaped command representation emitted by ps.
+        let listing = "\(child.processIdentifier) 1 ttys001 " + words.joined(separator: " ")
+        XCTAssertEqual(CodexProvider.candidateTTYs(id: "abc", processList: listing), ["ttys001"])
+        XCTAssertTrue(CodexProvider.candidateTTYs(id: "abc-other", processList: listing).isEmpty)
+    }
+
+    func testCodexHomeIsPreservedForResumeFreshAndNewSessionCommands() throws {
+        let root = try temporary(), home = root.appendingPathComponent("it's my data")
+        let env = ["CODEX_HOME": home.path, "PATH": root.path, "HOME": root.path]
+        let codex = CodexProvider(environment: env, connector: { MockCodexConnection { _, _ in ["thread": self.record()] } })
+        let executable = root.appendingPathComponent("codex")
+        try Data("#!/bin/sh\n".utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        var commands = [String]()
+        let service = SessionService(runner: { _, args, _, _ in commands.append(args.last!); return CommandResult() }, codex: codex)
+        let session = Session(id: "abc", cwd: "/tmp/project", provider: .codex)
+        XCTAssertTrue(codex.resumeCommand(session).contains("CODEX_HOME=" + shellQuote(home.path)))
+        try service.activate(session, fresh: true)
+        XCTAssertTrue(commands.last!.contains(codex.launchCommand))
+        var settings = Settings(); settings.newDirectory = root.appendingPathComponent("sessions").path
+        settings.newProvider = .codex
+        _ = try NewSessions(service: service, settings: settings, environment: env).start(cliPath: "/nonexistent/ccs")
+        XCTAssertTrue(commands.last!.contains(codex.launchCommand))
+        XCTAssertTrue(commands.last!.contains(codex.cleanupEnvironment + " '/nonexistent/ccs' --prune"))
+    }
+
+    func testProcessEnteringFolderDuringMetadataReadPreventsDeletion() throws {
+        let root = try temporary(), folder = root.appendingPathComponent("2026-11-08-1")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let holder = Process(); holder.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        holder.arguments = ["30"]; holder.currentDirectoryURL = folder
+        defer { if holder.isRunning { holder.terminate(); holder.waitUntilExit() } }
+        let client = MockCodexConnection { _, _ in
+            if !holder.isRunning { try holder.run() }
+            return ["data": []]
+        }
+        let service = SessionService(index: SessionIndex(projects: root.appendingPathComponent("missing"), cache: root.appendingPathComponent("cache")), codex: CodexProvider(connector: { client }))
+        try NewSessions(service: service).prune([folder])
+        XCTAssertTrue(holder.isRunning)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folder.path))
+    }
+
+    func testActivationConnectionDiscoversDaemonAfterMetadataFallback() throws {
+        let root = try temporary(), entry = record("abc", status: "idle")
+        let fallback = MockCodexConnection(shared: false) { _, _ in ["thread": entry] }
+        let daemon = MockCodexConnection { _, _ in ["thread": entry] }
+        var connections = 0
+        let provider = CodexProvider(environment: ["CODEX_HOME": root.path], connector: {
+            connections += 1; return connections == 1 ? fallback : daemon
+        })
+        XCTAssertEqual(try provider.current("abc").status, "unknown")
+        XCTAssertEqual(try provider.current("abc").status, "unknown")
+        XCTAssertEqual(connections, 1)
+        let socket = root.appendingPathComponent("app-server-control/app-server-control.sock")
+        try FileManager.default.createDirectory(at: socket.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data().write(to: socket)
+        XCTAssertEqual(try provider.current("abc").status, "idle")
+        XCTAssertEqual(connections, 2); XCTAssertTrue(fallback.closed)
+    }
+
 }

@@ -10,7 +10,7 @@ The Swift app and CLI share one engine. Neither Python nor Hammerspoon is needed
 
 ## Install
 
-Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v0.3.1/CCS-0.3.1-macos-universal.dmg),
+Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v1.0.0/CCS-1.0.0-macos-universal.dmg),
 drag CCS into Applications, and open it. Choose **Install Command-Line Tool** in
 the CCS menu to install the terminal picker too. Both Apple Silicon and Intel
 executables are included.
@@ -42,7 +42,8 @@ It backs up an existing app and command before replacing them. If needed, add
 ## Use
 
 Press **Option-Space** to open the native picker. Type to search, use the arrow
-keys to select, and press Enter to focus, attach, or resume a session.
+keys to select, and press Enter to focus, attach, or resume a session. Click to
+select a row or double-click to open it.
 
 | Shortcut | Action |
 | --- | --- |
@@ -50,7 +51,8 @@ keys to select, and press Enter to focus, attach, or resume a session.
 | Cmd-Shift-N | Choose the provider for new sessions |
 | Cmd-1 / Cmd-2 / Cmd-3 | All / Claude / Codex filter |
 | Shift-Enter | Start clean using the selected row’s provider and folder |
-| Tab | Toggle Recent / Folders |
+| Tab / Shift-Tab | Move between controls |
+| Control-Tab | Toggle Recent / Folders |
 | Cmd-Left / Cmd-Right | Change the date range |
 | Cmd-R | Refresh |
 | Escape | Close, or cancel the large-session dialog |
@@ -136,8 +138,9 @@ ccs --activate codex:ID # provider-qualified ID avoids ambiguity
 | Type / Backspace / Escape | Search / delete / clear |
 | Ctrl-R / Ctrl-C | Refresh / quit |
 
-`--provider` overrides saved providers for CLI queries and launches without
-changing app preferences. The popup always respects Settings → Providers. Bare
+`--provider` overrides saved providers for terminal queries and launches without
+changing app preferences. With `--gui`, it selects the popup’s saved filter; that
+provider must be enabled in Settings → Providers. Bare
 `--json` keeps its original Claude-only fields, including explicit nulls and no
 provider field. Combined JSON adds `provider` and `key` (`codex:ID` / `claude:ID`);
 unavailable Codex counts and costs are null. An ID shared by both providers must
@@ -170,7 +173,9 @@ abandoned folders older than five minutes. Cleanup keeps symlinks, other folder
 names, nonempty folders, saved-session folders, and folders whose safety cannot
 be verified. Cleanup checks saved folders from both providers, including archived
 Codex chats and subagents, even when hidden from the picker. If a required history
-source is unavailable, folders are kept. Cleanup can be disabled in Settings.
+source is unavailable, folders are kept. Cleanup uses a fresh process snapshot;
+macOS cannot atomically prevent an unrelated process entering a folder between
+that check and removal. Disable cleanup in Settings if you need to retain all folders.
 
 Claude transcripts remain under `~/.claude/projects`; Codex retains its own data
 under `CODEX_HOME` (normally `~/.codex`). The Claude metadata cache in

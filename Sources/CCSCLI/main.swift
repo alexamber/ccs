@@ -27,6 +27,9 @@ do {
     case .activate(let id): try service.activate(id: id, fresh: options.fresh, provider: options.provider ?? .all,
                                                enabledProviders: options.provider == nil ? settings.enabledProviders : Provider.allCases)
     case .prune(let folder): try NewSessions(service: service, settings: settings).prune([URL(fileURLWithPath: CCSPaths.expand(folder))])
+    case .pruneStale(let folder):
+        let root = URL(fileURLWithPath: CCSPaths.expand(folder))
+        try NewSessions(service: service, settings: settings).prune(FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil), minimumAge: 300)
     case .new:
         let explicit = options.provider.flatMap { Provider(rawValue: $0.rawValue) }
         print(try NewSessions(service: service, settings: settings).start(cliPath: cli, provider: explicit).path)
@@ -48,13 +51,16 @@ do {
                 print("\(indent)\(mark) [\(s.provider.title)] \(s.displayTitle)\(options.recent ? "  " + shortPath(s.cwd) : "")  \(s.statistics)  \(ageString(s.mtime))")
             } else { print(indent + row.label) }
         }
+        let warnings = service.issues.filter { enabled.contains($0.key) && (options.provider ?? .all).includes($0.key) }.sorted { $0.key.rawValue < $1.key.rawValue }.map(\.value)
+        for warning in warnings { FileHandle.standardError.write(Data((warning + "\n").utf8)) }
+        if service.historyFailures.contains(where: { enabled.contains($0) && (options.provider ?? .all).includes($0) }) { exit(1) }
     case .picker:
         guard isatty(STDIN_FILENO) == 1 && isatty(STDOUT_FILENO) == 1 else {
             throw CCSError.message("The picker needs a terminal. Use --list, --json, or --gui.")
         }
         if Settings.load().needsProviderSetup && !settings.needsProviderSetup { try settings.save() }
         try TerminalPicker(service: service, settings: settings, days: options.days, recent: options.recent, watch: options.watch, cliPath: cli, provider: options.provider ?? settings.providerFilter,
-                           enabledProviders: options.provider == nil ? settings.enabledProviders : Provider.allCases).run()
+                           enabledProviders: options.provider == nil ? settings.enabledProviders : Provider.allCases, explicitProvider: options.provider != nil).run()
     }
 } catch {
     FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8))

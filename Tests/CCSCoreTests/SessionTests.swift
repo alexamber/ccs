@@ -174,4 +174,49 @@ final class SessionTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: folder.path))
         XCTAssertEqual(physicalPath(alias.appendingPathComponent(folder.lastPathComponent).path), physicalPath(folder.path))
     }
+    func testIncompleteTranscriptCannotAuthorizeCleanupEvenAfterCacheHit() throws {
+        let root = try temporary(), project = root.appendingPathComponent("projects/example")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let file = project.appendingPathComponent("partial.jsonl")
+        try Data("{\"type\":\"user\",\"cwd\":\"/tmp/unfinished".utf8).write(to: file)
+        let index = SessionIndex(projects: root.appendingPathComponent("projects"), cache: root.appendingPathComponent("cache"))
+        XCTAssertTrue(try index.load().isEmpty); XCTAssertFalse(index.isComplete)
+        XCTAssertThrowsError(try index.load(requireComplete: true))
+        let folder = root.appendingPathComponent("2026-11-08-1")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let service = SessionService(index: index, runner: { _, _, _, _ in CommandResult(out: "n/\n") }, codex: CodexProvider(enabled: false))
+        XCTAssertTrue(try service.collect(days: 0).isEmpty)
+        XCTAssertTrue(service.historyFailures.contains(.claude))
+        XCTAssertThrowsError(try NewSessions(service: service).prune([folder]))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folder.path))
+        try Data("{\"type\":\"user\",\"cwd\":\"/tmp/project\"}\n{bad json".utf8).write(to: file)
+        XCTAssertNotNil(try index.load()["partial"])
+        XCTAssertThrowsError(try index.load(requireComplete: true))
+    }
+
+    func testExtremeCostMetadataDoesNotCrashFormatting() throws {
+        let root = try temporary(), file = root.appendingPathComponent("cost.jsonl")
+        try Data("{\"type\":\"user\",\"cwd\":\"/tmp/work\"}\n{\"type\":\"cost-state\",\"totalCostUSD\":1e100}".utf8).write(to: file)
+        XCTAssertNil(try SessionIndex.scan(file).cost)
+        XCTAssertFalse(Session(id: "test", cwd: "/tmp", cost: 1e100).statistics.isEmpty)
+        XCTAssertEqual(formattedCost(.infinity), "?")
+        XCTAssertEqual(formattedCost(12.5), "13")
+    }
+
+    func testCleanupProcessScanDoesNotHoldTheAllocationLock() throws {
+        let root = try temporary(), folder = root.appendingPathComponent("2026-11-08-1")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let allocator = NewSessions(service: SessionService(codex: CodexProvider(enabled: false)))
+        let completed = DispatchSemaphore(value: 0)
+        let service = SessionService(index: SessionIndex(projects: root.appendingPathComponent("missing"), cache: root.appendingPathComponent("cache")), runner: { _, _, _, _ in
+            DispatchQueue.global().async {
+                _ = try? allocator.create(root: root, day: "2026-11-09")
+                completed.signal()
+            }
+            XCTAssertEqual(completed.wait(timeout: .now() + 2), .success, "Cleanup blocked a new session while listing processes")
+            return CommandResult(out: "n/\n")
+        }, codex: CodexProvider(enabled: false))
+        try NewSessions(service: service).prune([folder])
+    }
+
 }

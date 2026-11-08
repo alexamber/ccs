@@ -67,7 +67,7 @@ Stripe SDK are included in the app.
    Codex-only, and both-provider setup, and physically test rapid Option-Space
    presses. Confirm launch-at-login behavior on an installed build.
 3. Inspect the signed artifacts and generated `Casks/ccs.rb`.
-4. Publish only after owner approval: create the matching `v0.3.1` GitHub release,
+4. Publish only after owner approval: create the matching versioned GitHub release,
    upload the release DMG, ZIP and checksums, then publish the generated cask in
    the tap. Set the version in `macOS/Info.plist`; both app and bundled CLI read
    it there. Match the Git tag and release notes to that version.

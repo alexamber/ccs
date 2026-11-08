@@ -235,7 +235,7 @@ final class Preferences: NSObject {
         explain("Your shell is not using this copy of ccs yet. Add this line to \(file), then open a new Terminal window:\n\n\(line)\n\nType ccs to browse sessions, or ccs --gui to open the popup. You can select and copy the setup line above.", from: cliAction)
     }
     @objc private func cleanupHelp(_ sender: NSButton) {
-        explain("Removes empty dated folders after Claude exits, and checks abandoned folders after five minutes. Folders with files, saved sessions, or a process using them are kept. If CCS cannot verify that a folder is unused, it keeps it.", from: sender)
+        explain("Checks empty dated folders after a session exits and abandoned folders after five minutes. Keeps folders with files, saved sessions, or processes found using them. Cleanup is best effort; turn it off to retain every session folder.", from: sender)
     }
     private func explain(_ text: String, from view: NSView) {
         let label = NSTextField(wrappingLabelWithString: text); label.font = .systemFont(ofSize: 12); label.preferredMaxLayoutWidth = 280

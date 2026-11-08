@@ -11,12 +11,14 @@ defines the build in `Package.swift`; macOS 14 is the minimum supported version.
 | `Sources/CTerminal` | Small ncurses bridge for terminal input and drawing |
 | `macOS` | Bundle metadata, Apple-events entitlement and icon generator |
 | `Tests/CCSCoreTests` | Shared-engine regression and safety tests |
+| `Tests/CCSAppTests` | Native focus routing and foreground responsiveness tests |
 | `scripts/check-native.py` | Developer-only packaged CLI and real PTY integration checks |
 | `scripts` | Build, signing, notarization, local installation and cask generation |
 | `Casks` / `Formula` | Download installation / optional local source build |
 
-The app sends blocking work to one serial engine queue. UI callbacks return to
-the main queue. The CLI calls the same core directly. Both use the same settings
+The app uses separate serial queues and service instances for foreground actions
+and history refreshes. Each queue owns its RPC connection; UI callbacks return to
+the main queue. Abandoned-folder cleanup runs in a separate CLI helper. The CLI calls the same core directly. Both use the same settings
 and metadata cache; neither executable depends on Hammerspoon or Python.
 
 Session metadata comes from Claude's local transcripts. Live status is refreshed
@@ -36,11 +38,15 @@ Session selection uses provider-qualified keys. Existing Claude JSON remains
 compatible; explicit combined exports include provider identity and nulls for
 unavailable Codex statistics. Settings auto-detect providers until the first
 successful setup, then retain explicit enabled-provider and new-provider choices.
-UI/CLI preference changes are propagated through distributed notifications.
+The app observes preference changes through distributed notifications. Open terminal
+pickers reload saved preferences once a second; an explicit `--provider` keeps its
+query scope while new-session preferences continue to update.
 
 New folders use a cross-process lock and a persistent daily high-water counter.
 Cleanup requires an empty, correctly named, nonsymlink folder, a complete saved
-session index, and a successful process working-directory check. Unknown state
+session index (including cached completeness), and a fresh process working-directory
+check after metadata reads. Final identity, age and emptiness checks run under a
+nonblocking allocation lock. Unknown state
 keeps the folder. Physical paths handle macOS filesystem aliases consistently.
 
 `AppInstallation` centralizes bundle discovery and product metadata;

@@ -14,14 +14,16 @@ public final class CodexProvider {
     public var hasSavedData: Bool { enabled && FileManager.default.fileExists(atPath: home.path) }
 
     public init(environment: [String: String] = ProcessInfo.processInfo.environment, enabled: Bool = true) {
-        self.environment = environment; self.enabled = enabled; connector = nil
         home = Self.dataDirectory(environment)
+        self.environment = environment.merging(["CODEX_HOME": home.path]) { _, value in value }
+        self.enabled = enabled; connector = nil
     }
     init(environment: [String: String] = ProcessInfo.processInfo.environment, connector: @escaping () throws -> CodexConnection) {
-        self.environment = environment; enabled = true; self.connector = connector
         home = Self.dataDirectory(environment)
+        self.environment = environment.merging(["CODEX_HOME": home.path]) { _, value in value }
+        enabled = true; self.connector = connector
     }
-    private static func dataDirectory(_ env: [String: String]) -> URL {
+    static func dataDirectory(_ env: [String: String]) -> URL {
         let userHome = env["HOME"] ?? CCSPaths.home
         var path = env["CODEX_HOME"].flatMap { $0.isEmpty ? nil : $0 } ?? userHome + "/.codex"
         if path == "~" { path = userHome }
@@ -29,7 +31,12 @@ public final class CodexProvider {
         return URL(fileURLWithPath: path)
     }
     private func client() throws -> CodexConnection {
-        if let connection { return connection }
+        if let connection {
+            let defaultSocket = home.appendingPathComponent("app-server-control/app-server-control.sock").path
+            if !connection.isShared && (FileManager.default.fileExists(atPath: defaultSocket) || Date().timeIntervalSince(lastSharedProbe) >= 30) {
+                invalidate()
+            } else { return connection }
+        }
         lastSharedProbe = Date()
         if let connector { let value = try connector(); connection = value; return value }
         var path = home.appendingPathComponent("app-server-control/app-server-control.sock").path
@@ -48,13 +55,8 @@ public final class CodexProvider {
     deinit { invalidate() }
 
     public func collect(days: Int = 0) -> [Session] {
-        guard enabled, hasSavedData || connector != nil else { issue = nil; return [] }
+        guard enabled, hasSavedData || connector != nil else { historyAvailable = true; issue = nil; return [] }
         do {
-            // Retry discovery when a metadata-only client may have been superseded
-            // by the daemon started by the user's CLI.
-            let defaultSocket = home.appendingPathComponent("app-server-control/app-server-control.sock").path
-            if connection?.isShared == false,
-               FileManager.default.fileExists(atPath: defaultSocket) || Date().timeIntervalSince(lastSharedProbe) >= 30 { invalidate() }
             let client = try client()
             let records = try list(client, archived: false, allSources: false)
             let cutoff = days == 0 ? 0 : Date().timeIntervalSince1970 - Double(days) * 86400
@@ -93,9 +95,11 @@ public final class CodexProvider {
             return session
         } catch { invalidate(); throw error }
     }
+    public var launchCommand: String { "env CODEX_HOME=" + shellQuote(home.path) + " codex" }
+    public var cleanupEnvironment: String { "env CODEX_HOME=" + shellQuote(home.path) }
     func resumeCommand(_ session: Session) -> String {
         let remote = socketPath.map { " --remote " + shellQuote("unix://" + $0) } ?? ""
-        return "codex\(remote) --cd \(shellQuote(session.cwd)) resume \(shellQuote(session.id))"
+        return "\(launchCommand)\(remote) --cd \(shellQuote(session.cwd)) resume \(shellQuote(session.id))"
     }
     private func list(_ client: CodexConnection, archived: Bool, allSources: Bool) throws -> [[String: Any]] {
         let sources = allSources ? ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"] : ["cli", "vscode", "appServer", "unknown"]
@@ -136,13 +140,13 @@ public final class CodexProvider {
         } else { session.status = "unknown" }
         return session
     }
-    static func candidateTTYs(id: String, processList: String, localSocketPath: String? = nil) -> [String] {
+    static func candidateTTYs(id: String, processList: String, localSocketPath: String? = nil, arguments: (Int32) -> [String]? = ProcessArguments.read) -> [String] {
         var result = [String](), seen = Set<String>()
         let valuedOptions = Set(["-C", "--cd", "-c", "--config", "--remote", "--remote-auth-token-env", "-m", "--model", "-p", "--profile", "-s", "--sandbox", "-a", "--ask-for-approval", "--add-dir"])
         for line in processList.split(separator: "\n") {
             let columns = line.split(maxSplits: 3, omittingEmptySubsequences: true, whereSeparator: { $0.isWhitespace })
             guard columns.count == 4, columns[2] != "??" else { continue }
-            let words = shellWords(String(columns[3]))
+            guard let pid = Int32(columns[0]), let words = arguments(pid) else { continue }
             guard let first = words.first, URL(fileURLWithPath: first).lastPathComponent == "codex" else { continue }
             var remote = words.first(where: { $0.hasPrefix("--remote=") }).map { String($0.dropFirst(9)) }
             if let flag = words.firstIndex(of: "--remote"), flag + 1 < words.count { remote = words[flag + 1] }

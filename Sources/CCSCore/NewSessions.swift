@@ -48,42 +48,64 @@ public final class NewSessions {
             throw CCSError.message("The \(provider.command) command was not found. Install \(provider.title), then restart CCS so it reads your updated shell PATH.")
         }
         let root = settings.newRoot(environment: environment)
-        let abandoned = settings.cleanup ? (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) : nil
         let path = try create(root: root)
-        let cleanup = settings.cleanup ? "; cd; \(shellQuote(cliPath)) --prune \(shellQuote(path.path))" : ""
-        do { try service.openTerminal("cd \(shellQuote(path.path)) && \(provider.command)\(cleanup)") }
+        let cleanup = settings.cleanup ? "; cd; \(service.codex.cleanupEnvironment) \(shellQuote(cliPath)) --prune \(shellQuote(path.path))" : ""
+        do { try service.openTerminal("cd \(shellQuote(path.path)) && \(provider == .codex ? service.codex.launchCommand : provider.command)\(cleanup)") }
         catch { _ = rmdir(path.path); throw error }
-        // Opening a new session takes precedence over scanning old folders.
-        if let abandoned { try? prune(abandoned, minimumAge: 300) }
+        // A separate short-lived helper survives CLI exit and cannot block the
+        // launch result or share an app-server connection with foreground work.
+        if settings.cleanup {
+            let helper = Process(); helper.executableURL = URL(fileURLWithPath: cliPath)
+            helper.arguments = ["--prune-stale", root.path]
+            helper.environment = environment.merging(["CODEX_HOME": CodexProvider.dataDirectory(environment).path]) { _, value in value }
+            helper.standardInput = FileHandle.nullDevice; helper.standardOutput = FileHandle.nullDevice; helper.standardError = FileHandle.nullDevice
+            try? helper.run()
+        }
         return path
     }
 
     public func prune(_ paths: [URL], minimumAge: Double = 0) throws {
         let cutoff = Date().addingTimeInterval(-minimumAge)
-        let candidates = paths.filter { path in
+        let candidates = paths.compactMap { path -> (URL, stat)? in
             guard path.lastPathComponent.range(of: #"^\d{4}-\d{2}-\d{2}-\d+$"#, options: .regularExpression) != nil,
                   let attrs = try? path.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey, .contentModificationDateKey]),
                   attrs.isSymbolicLink != true, attrs.isDirectory == true,
                   let date = attrs.contentModificationDate, date <= cutoff,
-                  let contents = try? fm.contentsOfDirectory(atPath: path.path), contents.isEmpty else { return false }
-            return true
+                  let contents = try? fm.contentsOfDirectory(atPath: path.path), contents.isEmpty else { return nil }
+            var identity = stat()
+            guard lstat(path.path, &identity) == 0, (identity.st_mode & S_IFMT) == S_IFDIR else { return nil }
+            return (path, identity)
         }
         guard !candidates.isEmpty else { return }
-        let result = try service.runner("/usr/sbin/lsof", ["-w", "-d", "cwd", "-Fn"], nil, 10)
-        // A nonzero/partial process listing cannot authorize deletion.
-        guard result.code == 0 else { return }
-        let busy = Set(result.out.split(separator: "\n").filter { $0.hasPrefix("n") }.map { String($0.dropFirst()) })
-        guard !busy.isEmpty else { return }
+        // Metadata may take seconds. Resolve it before taking a process snapshot.
         let sessions = try service.index.load(requireComplete: true)
         let codex = try service.codex.savedWorkingDirectories()
-        let named = busy.union(sessions.values.map { $0.cwd }).union(codex)
-        let used = named.union(named.map { physicalPath($0) })
-        for path in candidates {
+        let named = Set(sessions.values.map { $0.cwd }).union(codex)
+        let saved = named.union(named.map { physicalPath($0) })
+        for (path, original) in candidates {
             let absolute = path.standardizedFileURL.path, resolved = physicalPath(path.path)
-            if !used.contains(absolute) && !used.contains(resolved) {
-                // rmdir is atomic and fails if files appeared since the check.
-                _ = rmdir(absolute)
-            }
+            guard !saved.contains(absolute), !saved.contains(resolved) else { continue }
+            // Refresh immediately before each deletion. A failed or partial listing
+            // never authorizes cleanup; macOS has no atomic "rmdir unless cwd" API.
+            let result = try service.runner("/usr/sbin/lsof", ["-w", "-d", "cwd", "-Fn"], nil, 10)
+            guard result.code == 0 else { continue }
+            let busy = Set(result.out.split(separator: "\n").filter { $0.hasPrefix("n") }.map { String($0.dropFirst()) })
+            guard !busy.isEmpty, !busy.contains(absolute), !busy.contains(resolved),
+                  !busy.contains(where: { physicalPath($0) == resolved }) else { continue }
+            // Hold the counter lock only for the final filesystem operations.
+            // Cleanup skips contention instead of delaying a foreground launch.
+            let lockPath = path.deletingLastPathComponent().appendingPathComponent(".ccs-counter.lock").path
+            let lock = open(lockPath, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
+            guard lock >= 0 else { continue }
+            defer { flock(lock, LOCK_UN); close(lock) }
+            guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { continue }
+            var after = stat()
+            guard lstat(absolute, &after) == 0, original.st_dev == after.st_dev, original.st_ino == after.st_ino,
+                  (after.st_mode & S_IFMT) == S_IFDIR,
+                  Date(timeIntervalSince1970: Double(after.st_mtimespec.tv_sec) + Double(after.st_mtimespec.tv_nsec) / 1e9) <= cutoff,
+                  (try? fm.contentsOfDirectory(atPath: absolute).isEmpty) == true else { continue }
+            // rmdir additionally rejects files created after the emptiness check.
+            _ = rmdir(absolute)
         }
     }
 }

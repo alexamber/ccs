@@ -1,17 +1,33 @@
-import CCSCore
 import AppKit
+import CCSCore
 import Foundation
 
 final class Engine {
-    private let queue = DispatchQueue(label: "io.github.alexamber.ccs.engine", qos: .userInitiated)
-    // Both lazy values are accessed only on the serial engine queue.
-    private lazy var environment = ProcessRunner.loginEnvironment()
-    private lazy var service = SessionService(runner: ProcessRunner(environment: environment).command,
-                                              codex: CodexProvider(environment: environment))
-    func perform<T>(_ work: @escaping (SessionService, [String: String]) throws -> T,
+    // Each lane owns its service and RPC connection. A history refresh cannot
+    // queue ahead of opening a session, and concurrent RPC reads never interleave.
+    private final class Lane {
+        let queue: DispatchQueue
+        var service: SessionService?
+        init(_ name: String, qos: DispatchQoS) { queue = DispatchQueue(label: "io.github.alexamber.ccs." + name, qos: qos) }
+    }
+    private let foreground = Lane("actions", qos: .userInitiated)
+    private let background = Lane("history", qos: .utility)
+    private let bootstrap = DispatchQueue(label: "io.github.alexamber.ccs.environment")
+    private var environment = [String: String]()
+    init(environment: @escaping () -> [String: String] = ProcessRunner.loginEnvironment) {
+        bootstrap.async { self.environment = environment() }
+    }
+
+    func perform<T>(background: Bool = false, _ work: @escaping (SessionService, [String: String]) throws -> T,
                     completion: @escaping (Result<T, Error>) -> Void) {
-        queue.async {
-            let result = Result { try work(self.service, self.environment) }
+        let lane = background ? self.background : foreground
+        lane.queue.async {
+            let environment = self.bootstrap.sync { self.environment }
+            if lane.service == nil {
+                lane.service = SessionService(runner: ProcessRunner(environment: environment).command,
+                                              codex: CodexProvider(environment: environment))
+            }
+            let result = Result { try work(lane.service!, environment) }
             DispatchQueue.main.async { completion(result) }
         }
     }

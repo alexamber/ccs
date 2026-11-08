@@ -8,7 +8,7 @@ struct CLIUsageError: LocalizedError {
 
 struct Options {
     enum Action {
-        case picker, help, version, gui, installCLI, activate(String), prune(String), new, json, list
+        case picker, help, version, gui, installCLI, activate(String), prune(String), pruneStale(String), new, json, list
     }
     var action: Action = .picker
     var days: Int
@@ -44,7 +44,7 @@ Claude-only compatible format. Use --provider all --json for combined metadata.
     init(arguments: [String], settings: Settings) throws {
         days = settings.defaultDays
         let args = arguments.flatMap { arg -> [String] in
-            if let equal = arg.firstIndex(of: "="), ["--days", "--watch", "--activate", "--prune", "--provider"].contains(String(arg[..<equal])) {
+            if let equal = arg.firstIndex(of: "="), ["--days", "--watch", "--activate", "--prune", "--prune-stale", "--provider"].contains(String(arg[..<equal])) {
                 return [String(arg[..<equal]), String(arg[arg.index(after: equal)...])]
             }
             if arg.hasPrefix("-w"), arg.count > 2, !arg.hasPrefix("--") { return ["-w", String(arg.dropFirst(2))] }
@@ -75,12 +75,13 @@ Claude-only compatible format. Use --provider all --json for combined metadata.
                     i += 1; watch = n
                 }
             case "--fresh": fresh = true
-            case "--activate", "--prune", "--new", "--json", "--list", "--gui", "--install-cli":
+            case "--activate", "--prune", "--prune-stale", "--new", "--json", "--list", "--gui", "--install-cli":
                 guard !hasAction else { throw CLIUsageError(message: "Choose only one action. Use --help for the available commands.") }
                 hasAction = true
                 switch arg {
                 case "--activate": action = .activate(try value(arg))
                 case "--prune": action = .prune(try value(arg))
+                case "--prune-stale": action = .pruneStale(try value(arg))
                 case "--new": action = .new
                 case "--json": action = .json
                 case "--list": action = .list

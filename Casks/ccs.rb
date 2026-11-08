@@ -1,6 +1,6 @@
 cask "ccs" do
-  version "0.3.1"
-  sha256 "715d3918a538431ca8d0e87fa9bbb05c7c59ec2d1bc2e1389c923c98732f1cc0"
+  version "1.0.0"
+  sha256 "45285ba88b1282434f12e2d5d5186d62537f072313fd457fc6505251bd49f5a2"
   url "https://github.com/alexamber/ccs/releases/download/v#{version}/CCS-#{version}-macos-universal.dmg"
   name "CCS"
   desc "Native macOS and terminal picker for Claude Code and Codex"

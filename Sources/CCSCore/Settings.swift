@@ -12,7 +12,7 @@ public enum CCSPaths {
     }
 }
 
-public struct Settings: Codable {
+public struct Settings: Codable, Equatable {
     public var defaultDays = 7
     public var folders = false
     public var newDirectory = "~/ccs-sessions"

@@ -4,11 +4,12 @@ public final class SessionService {
     public let index: SessionIndex
     public let runner: CommandRunner
     public let codex: CodexProvider
+    private let arguments: (Int32) -> [String]?
     public private(set) var issues = [Provider: String]()
     public private(set) var historyFailures = Set<Provider>()
     public init(index: SessionIndex = SessionIndex(), runner: @escaping CommandRunner = ProcessRunner().command,
-                codex: CodexProvider = CodexProvider()) {
-        self.index = index; self.runner = runner; self.codex = codex
+                codex: CodexProvider = CodexProvider(), arguments: @escaping (Int32) -> [String]? = ProcessArguments.read) {
+        self.index = index; self.runner = runner; self.codex = codex; self.arguments = arguments
     }
 
     public func liveSessions() -> [String: LiveSession]? {
@@ -21,11 +22,17 @@ public final class SessionService {
     public func collect(days: Int, provider: ProviderFilter = .claude, enabledProviders: [Provider] = Provider.allCases) throws -> [Session] {
         var sessions = [Session]()
         if provider.includes(.claude), enabledProviders.contains(.claude) {
-            do { sessions += try collectClaude(days: days); historyFailures.remove(.claude) }
+            do {
+                sessions += try collectClaude(days: days)
+                if index.isComplete { historyFailures.remove(.claude) } else {
+                    historyFailures.insert(.claude)
+                    issues[.claude] = "Some Claude history is incomplete or unreadable. Check ~/.claude/projects, then refresh."
+                }
+            }
             catch {
                 historyFailures.insert(.claude)
+                issues[.claude] = "Claude history unavailable. Check access to ~/.claude/projects, then refresh."
                 if provider == .claude { throw error }
-                issues[.claude] = "Claude history unavailable. Codex sessions are still available."
             }
         }
         if provider.includes(.codex), enabledProviders.contains(.codex) {
@@ -87,10 +94,10 @@ public final class SessionService {
     }
 
     private func activateCodex(_ s: Session, fresh: Bool) throws {
-        if fresh { try openTerminal("cd \(shellQuote(s.cwd)) && codex"); return }
+        if fresh { try openTerminal("cd \(shellQuote(s.cwd)) && \(codex.launchCommand)"); return }
         let current = try codex.current(s.id)
         if let processes = try? runner("/bin/ps", ["-axo", "pid=,ppid=,tty=,command="], nil, 5), processes.code == 0 {
-            let ttys = CodexProvider.candidateTTYs(id: current.id, processList: processes.out, localSocketPath: codex.sharedSocketPath)
+            let ttys = CodexProvider.candidateTTYs(id: current.id, processList: processes.out, localSocketPath: codex.sharedSocketPath, arguments: arguments)
             if !ttys.isEmpty {
                 let focus = try runner("/usr/bin/osascript", ["-"] + ttys.map { "/dev/" + $0 }, Self.focusScript, 15)
                 if focus.code != 0 { throw CCSError.message(focus.err.nonempty ?? "Terminal automation failed.") }
@@ -109,9 +116,9 @@ public final class SessionService {
     public func candidateTTYs(_ s: Session, live: LiveSession) throws -> [String] {
         let result = try runner("/bin/ps", ["-axo", "pid=,ppid=,tty=,command="], nil, 5)
         guard result.code == 0 else { throw CCSError.message("Could not inspect Terminal processes.") }
-        return Self.candidateTTYs(s, live: live, processList: result.out)
+        return Self.candidateTTYs(s, live: live, processList: result.out, arguments: arguments)
     }
-    public static func candidateTTYs(_ s: Session, live: LiveSession, processList: String) -> [String] {
+    public static func candidateTTYs(_ s: Session, live: LiveSession, processList: String, arguments: ((Int32) -> [String]?)? = nil) -> [String] {
         var procs = [Int: (Int, String, String)](), viewers = [String]()
         let keys = Set([s.id, live.id, live.name].compactMap { $0 })
         for line in processList.split(separator: "\n") {
@@ -119,7 +126,9 @@ public final class SessionService {
             guard p.count >= 3, let pid = Int(p[0]), let parent = Int(p[1]) else { continue }
             let command = p.count == 4 ? String(p[3]) : ""
             procs[pid] = (parent, String(p[2]), command)
-            if let range = command.range(of: #"(?:^|/)claude attach "#, options: .regularExpression) {
+            if let arguments, let words = arguments(Int32(clamping: pid)) {
+                if words.count >= 3, URL(fileURLWithPath: words[0]).lastPathComponent == "claude", words[1] == "attach", keys.contains(words[2]) { viewers.append(String(p[2])) }
+            } else if arguments == nil, let range = command.range(of: #"(?:^|/)claude attach "#, options: .regularExpression) {
                 let target = String(command[range.upperBound...])
                 if keys.contains(target) || shellWords(target).first.map(keys.contains) == true { viewers.append(String(p[2])) }
             }

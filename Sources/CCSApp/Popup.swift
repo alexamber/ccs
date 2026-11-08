@@ -27,6 +27,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         days = settings.defaultDays; recent = !settings.folders
         panel = PickerPanel(contentRect: NSRect(x: 0, y: 0, width: 700, height: 470), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         super.init()
+        panel.autorecalculatesKeyViewLoop = true
         panel.delegate = self; panel.isReleasedWhenClosed = false
         panel.level = .floating; panel.isFloatingPanel = true; panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
@@ -48,6 +49,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         let bar = NSStackView(); bar.spacing = 10
         views.target = self; views.action = #selector(changeView); views.selectedSegment = recent ? 0 : 1
         ranges.target = self; ranges.action = #selector(changeRange); ranges.selectedSegment = dateWindows.firstIndex(of: days) ?? 2
+        views.toolTip = "Control-Tab switches Recent / Folders"
         views.setAccessibilityLabel("Session grouping"); ranges.setAccessibilityLabel("Date range")
         providers.target = self; providers.action = #selector(changeProvider)
         providers.selectedSegment = ProviderFilter.allCases.firstIndex(of: settings.providerFilter) ?? 0
@@ -59,7 +61,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         stack.addArrangedSubview(bar); bar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("session")))
         table.headerView = nil; table.backgroundColor = .clear; table.style = .fullWidth
-        table.dataSource = self; table.delegate = self; table.target = self; table.action = #selector(clicked)
+        table.dataSource = self; table.delegate = self; table.target = self; table.doubleAction = #selector(clicked)
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle; table.intercellSpacing = NSSize(width: 0, height: 2)
         table.setAccessibilityLabel("Claude Code and Codex sessions")
         scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.drawsBackground = false
@@ -119,7 +121,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     func show(repeatedHotkey: Bool = false) {
         guard !launching else { return }
         if panel.isVisible {
-            if repeatedHotkey { newSession() } else { panel.makeKeyAndOrderFront(nil); panel.makeFirstResponder(search) }
+            if repeatedHotkey { newSession() } else { panel.makeKeyAndOrderFront(nil) }
             return
         }
         generation += 1; sessions = []; search.stringValue = ""; reload()
@@ -149,7 +151,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     func refresh() {
         guard !loading else { return }; loading = true
         let request = generation
-        engine.perform({ service, env in
+        engine.perform(background: true, { service, env in
             let enabled = Settings.load().resolvingProviders(environment: env).enabledProviders
             let sessions = try service.collect(days: 0, provider: .all, enabledProviders: enabled)
             return (sessions, service.issues, enabled.filter { $0.isInstalled(environment: env) })
@@ -190,6 +192,11 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     }
     func handle(_ event: NSEvent) -> Bool {
         let command = event.modifierFlags.contains(.command)
+        let control = event.modifierFlags.contains(.control)
+        let responder = panel.firstResponder
+        let navigatingSessions = responder === table || responder === search || responder === search.currentEditor()
+        // Other controls retain their native arrows, Return, Tab and Shift-Tab.
+        if [36, 76, 125, 126, 121, 116, 115, 119].contains(event.keyCode), (!navigatingSessions || !event.modifierFlags.intersection([.control, .option, .command]).isEmpty) { return false }
         switch event.keyCode {
         case 53: hide()
         case 36, 76: activateSelected(fresh: event.modifierFlags.contains(.shift))
@@ -199,7 +206,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         case 116: move(-10)
         case 115: move(-rows.count)
         case 119: move(rows.count)
-        case 48: recent.toggle(); views.selectedSegment = recent ? 0 : 1; reload()
+        case 48 where control && !command: recent.toggle(); views.selectedSegment = recent ? 0 : 1; reload()
         case 123 where command, 124 where command:
             days = cycleWindow(days, step: event.keyCode == 124 ? 1 : -1)
             ranges.selectedSegment = dateWindows.firstIndex(of: days) ?? 2; reload()
@@ -215,36 +222,38 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         return true
     }
     func controlTextDidChange(_ obj: Notification) { reload() }
-    @objc func changeView() { recent = views.selectedSegment == 0; reload(); panel.makeFirstResponder(search) }
-    @objc func changeRange() { days = dateWindows[ranges.selectedSegment]; reload(); panel.makeFirstResponder(search) }
+    @objc func changeView() { recent = views.selectedSegment == 0; reload() }
+    @objc func changeRange() { days = dateWindows[ranges.selectedSegment]; reload() }
     @objc private func changeProvider() { selectFilter(ProviderFilter.allCases[providers.selectedSegment]) }
     func selectFilter(_ filter: ProviderFilter) {
         guard filter == .all || settings.enabledProviders.contains(where: { filter.includes($0) }) else { return }
         var value = Settings.load(); value.providerFilter = filter
         do { try onSave?(value) }
         catch { providers.selectedSegment = ProviderFilter.allCases.firstIndex(of: settings.providerFilter) ?? 0; showError(error, window: panel) }
-        panel.makeFirstResponder(search)
     }
     @objc private func changeNewProvider() {
         var value = Settings.load(); value.newProvider = settings.enabledProviders[max(0, newProvider.indexOfSelectedItem)]
         do { try onSave?(value) }
         catch { newProvider.selectItem(at: settings.enabledProviders.firstIndex(of: settings.newProvider) ?? 0); showError(error, window: panel) }
-        panel.makeFirstResponder(search)
     }
-    @objc func clicked() { if table.clickedRow >= 0 { activateSelected(fresh: NSEvent.modifierFlags.contains(.shift)) } }
+    @objc func clicked() {
+        let row = table.clickedRow
+        guard rows.indices.contains(row), rows[row].session != nil else { return }
+        select(row); activateSelected(fresh: NSEvent.modifierFlags.contains(.shift))
+    }
     @objc func settingsClicked() { onSettings?() }
     func activateSelected(fresh: Bool) {
         guard let s = selected else { return }
         if s.isLarge && !fresh {
             asking = true
             let alert = NSAlert(); alert.messageText = "Resume a large session?"
-            alert.informativeText = "\(s.turns) prompts\(s.cost.map { " · $\(Int($0.rounded())) recorded" } ?? ""). Resuming includes the saved conversation in future prompts. A clean session starts empty in \(shortPath(s.cwd))."
-            alert.addButton(withTitle: "Start clean here"); alert.addButton(withTitle: "Resume"); alert.addButton(withTitle: "Cancel")
+            alert.informativeText = "\(s.turns) prompts\(s.cost.map { " · $\(formattedCost($0)) recorded" } ?? ""). Resuming includes the saved conversation in future prompts. A clean session starts empty in \(shortPath(s.cwd))."
+            alert.addButton(withTitle: "Resume"); alert.addButton(withTitle: "Start clean here"); alert.addButton(withTitle: "Cancel")
             alert.buttons.last?.keyEquivalent = "\u{1b}"
             alert.beginSheetModal(for: panel) { [weak self] response in
                 guard let self else { return }; self.asking = false
-                if response == .alertFirstButtonReturn { self.activate(s, fresh: true) }
-                else if response == .alertSecondButtonReturn { self.activate(s, fresh: false) }
+                if response == .alertFirstButtonReturn { self.activate(s, fresh: false) }
+                else if response == .alertSecondButtonReturn { self.activate(s, fresh: true) }
                 else { self.panel.makeFirstResponder(self.search) }
             }
         } else { activate(s, fresh: fresh) }
