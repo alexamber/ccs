@@ -10,7 +10,7 @@ The Swift app and CLI share one engine. Neither Python nor Hammerspoon is needed
 
 ## Install
 
-Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v0.3.0/CCS-0.3.0-macos-universal.dmg),
+Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v0.3.1/CCS-0.3.1-macos-universal.dmg),
 drag CCS into Applications, and open it. Choose **Install Command-Line Tool** in
 the CCS menu to install the terminal picker too. Both Apple Silicon and Intel
 executables are included.

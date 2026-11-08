@@ -187,4 +187,14 @@ final class CodexTests: XCTestCase {
         XCTAssertEqual(provider.collect().count, 1)
         XCTAssertEqual(connections, 1); XCTAssertFalse(client.closed)
     }
+    func testSavedFilterAndNewProviderCannotSelectADisabledProvider() throws {
+        let path = try temporary().appendingPathComponent("settings.json")
+        var settings = Settings()
+        settings.defaultDays = 30; settings.enabledProviders = [.claude]
+        settings.providerFilter = .codex; settings.newProvider = .codex
+        try settings.save(to: path)
+        let loaded = Settings.load(from: path)
+        XCTAssertEqual(loaded.providerFilter, .all); XCTAssertEqual(loaded.newProvider, .claude)
+        XCTAssertEqual(loaded.enabledProviders, [.claude]); XCTAssertEqual(loaded.defaultDays, 30)
+    }
 }

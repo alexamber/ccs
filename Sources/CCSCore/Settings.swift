@@ -66,6 +66,7 @@ public struct Settings: Codable {
         if !dateWindows.contains(result.defaultDays) { result.defaultDays = 7 }
         if result.newDirectory.isEmpty { result.newDirectory = "~/ccs-sessions" }
         if result.storedEnabledProviders?.isEmpty == true { result.storedEnabledProviders = nil }
+        if result.storedEnabledProviders != nil { result = result.resolvingProviders(environment: [:]) }
         return result
     }
     public func save(to url: URL = CCSPaths.settings) throws {

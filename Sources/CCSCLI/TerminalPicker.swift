@@ -103,7 +103,10 @@ final class TerminalPicker {
                 let order = ProviderFilter.allCases.filter { filter in filter == .all || enabledProviders.contains { filter.includes($0) } }
                 provider = order[((order.firstIndex(of: provider) ?? 0) + 1) % order.count]
                 do {
-                    var settings = Settings.load(); settings.providerFilter = provider; try settings.save()
+                    var settings = Settings.load()
+                    if provider == .all || settings.enabledProviders.contains(where: { provider.includes($0) }) {
+                        settings.providerFilter = provider; try settings.save()
+                    }
                     sessions = try service.collect(days: days, provider: provider, enabledProviders: enabledProviders)
                 } catch { message = error.localizedDescription }
                 selected = 0; top = 0

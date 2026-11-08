@@ -146,7 +146,12 @@ with tempfile.TemporaryDirectory(prefix="ccs-native-check-") as temp:
         # ncurses may emit only the changed suffix of "Claude" → "Codex".
         read_until(b"odex")
         assert json.loads(Path(env["CCS_SETTINGS_PATH"]).read_text())["newProvider"] == "codex"
-        os.write(master, b"\x03")
+        preferences = json.loads(Path(env["CCS_SETTINGS_PATH"]).read_text())
+        preferences.update(enabledProviders=["claude"], providerFilter="claude", newProvider="claude")
+        Path(env["CCS_SETTINGS_PATH"]).write_text(json.dumps(preferences))
+        # The open TUI can still view both providers as a one-command override.
+        # Codex → All → Claude → Codex must not save disabled Codex as the app filter.
+        os.write(master, b"\x06\x06\x06\x03")
         # Continue draining the PTY while curses restores terminal modes. A
         # parent waiting without draining can block the child's final redraw.
         deadline = time.monotonic() + 5
@@ -157,6 +162,7 @@ with tempfile.TemporaryDirectory(prefix="ccs-native-check-") as temp:
                 except OSError:
                     break
         assert process.wait(timeout=1) == 0
+        assert json.loads(Path(env["CCS_SETTINGS_PATH"]).read_text())["providerFilter"] == "claude"
     finally:
         if process.poll() is None:
             process.kill(); process.wait(timeout=5)
