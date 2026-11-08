@@ -4,6 +4,7 @@ import Darwin
 public enum Product {
     public static let bundleIdentifier = "io.github.alexamber.ccs"
     public static let showNotification = Notification.Name(bundleIdentifier + ".show")
+    public static let settingsNotification = Notification.Name(bundleIdentifier + ".settings")
     public static let website = URL(string: "https://github.com/alexamber/ccs")!
     public static var version: String {
         AppInstallation.embeddedBundle?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development"

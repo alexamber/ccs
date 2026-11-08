@@ -61,11 +61,13 @@ Stripe SDK are included in the app.
 ## Review and publish
 
 1. Install the app and test the popup, shortcut, search, date/view switching,
-   large-session confirmation, Terminal activation, and CLI installation.
+   large-session confirmation, both providers, Terminal activation, and CLI installation.
 2. Run the packaged-CLI smoke checks, including a real process holding a dated
-   working directory. Confirm launch-at-login behavior on an installed build.
+   working directory and archived/subagent Codex history. Verify Claude-only,
+   Codex-only, and both-provider setup, and physically test rapid Option-Space
+   presses. Confirm launch-at-login behavior on an installed build.
 3. Inspect the signed artifacts and generated `Casks/ccs.rb`.
-4. Publish only after owner approval: create the matching `v0.2.0` GitHub release,
+4. Publish only after owner approval: create the matching `v0.3.0` GitHub release,
    upload the release DMG, ZIP and checksums, then publish the generated cask in
    the tap. Set the version in `macOS/Info.plist`; both app and bundled CLI read
    it there. Match the Git tag and release notes to that version.

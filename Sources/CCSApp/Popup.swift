@@ -6,13 +6,20 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     let engine: Engine
     var settings: Settings
     var onSettings: (() -> Void)?
+    var onSave: ((Settings) throws -> Void)?
     private let search = NSSearchField(), table = NSTableView(), scroll = NSScrollView()
     private let views = NSSegmentedControl(labels: ["Recent", "Folders"], trackingMode: .selectOne, target: nil, action: nil)
     private let ranges = NSSegmentedControl(labels: ["1d", "3d", "7d", "30d", "All"], trackingMode: .selectOne, target: nil, action: nil)
+    private let providers = NSSegmentedControl(labels: ProviderFilter.allCases.map(\.title), trackingMode: .selectOne, target: nil, action: nil)
+    private let newProvider = NSPopUpButton()
+    private let newProviderValue = NSTextField(labelWithString: "")
+    private let keys = NSTextField(labelWithString: "")
     private let count = NSTextField(labelWithString: ""), message = NSTextField(labelWithString: "")
     private let empty = NSTextField(labelWithString: "Loading sessions…")
     private var sessions = [Session](), rows = [SessionRow](), timer: Timer?, monitor: Any?
     private var generation = 0, loading = false, asking = false
+    private var launching = false, issues = [Provider: String]()
+    private var installedProviders: [Provider]?
     private var previousApplication: NSRunningApplication?
     private var days: Int, recent: Bool
     init(engine: Engine, settings: Settings) {
@@ -34,7 +41,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
             stack.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -16),
             stack.topAnchor.constraint(equalTo: background.topAnchor, constant: 16),
             stack.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -12)])
-        search.placeholderString = "Search Claude sessions"; search.font = .systemFont(ofSize: 17)
+        search.placeholderString = "Search Claude and Codex sessions"; search.font = .systemFont(ofSize: 17)
         search.delegate = self; search.sendsSearchStringImmediately = true
         search.setAccessibilityLabel("Search sessions")
         stack.addArrangedSubview(search); search.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
@@ -42,15 +49,19 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         views.target = self; views.action = #selector(changeView); views.selectedSegment = recent ? 0 : 1
         ranges.target = self; ranges.action = #selector(changeRange); ranges.selectedSegment = dateWindows.firstIndex(of: days) ?? 2
         views.setAccessibilityLabel("Session grouping"); ranges.setAccessibilityLabel("Date range")
+        providers.target = self; providers.action = #selector(changeProvider)
+        providers.selectedSegment = ProviderFilter.allCases.firstIndex(of: settings.providerFilter) ?? 0
+        providers.isHidden = settings.enabledProviders.count == 1
+        providers.setAccessibilityLabel("Session provider"); providers.toolTip = "⌘1 All · ⌘2 Claude · ⌘3 Codex"
         count.font = .systemFont(ofSize: 11); count.textColor = .secondaryLabelColor
-        bar.addArrangedSubview(views); bar.addArrangedSubview(ranges)
+        bar.addArrangedSubview(views); bar.addArrangedSubview(providers); bar.addArrangedSubview(ranges)
         let spacer = NSView(); spacer.setContentHuggingPriority(.defaultLow, for: .horizontal); bar.addArrangedSubview(spacer); bar.addArrangedSubview(count)
         stack.addArrangedSubview(bar); bar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("session")))
         table.headerView = nil; table.backgroundColor = .clear; table.style = .fullWidth
         table.dataSource = self; table.delegate = self; table.target = self; table.action = #selector(clicked)
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle; table.intercellSpacing = NSSize(width: 0, height: 2)
-        table.setAccessibilityLabel("Claude Code sessions")
+        table.setAccessibilityLabel("Claude Code and Codex sessions")
         scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.drawsBackground = false
         stack.addArrangedSubview(scroll); scroll.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 240).isActive = true
@@ -61,7 +72,16 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         message.lineBreakMode = .byTruncatingTail; message.setAccessibilityLabel("Session status")
         stack.addArrangedSubview(message); message.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         let footer = NSStackView(); footer.spacing = 8
-        let keys = NSTextField(labelWithString: "↵ Open   ⇧↵ New here   ⌘N New session   Tab View   ⌘←→ Range   Esc Close")
+        newProvider.addItems(withTitles: Provider.allCases.map { "New: " + $0.title })
+        newProvider.selectItem(at: Provider.allCases.firstIndex(of: settings.newProvider) ?? 0)
+        newProvider.controlSize = .small; newProvider.font = .systemFont(ofSize: 11)
+        newProvider.target = self; newProvider.action = #selector(changeNewProvider)
+        newProvider.setAccessibilityLabel("Provider for new dated sessions")
+        newProvider.toolTip = "Used by ⌘N and \(settings.hotkeyLabel) again. ⇧↵ uses the selected row’s provider."
+        footer.addArrangedSubview(newProvider)
+        newProviderValue.font = .systemFont(ofSize: 11, weight: .medium)
+        footer.addArrangedSubview(newProviderValue)
+        keys.stringValue = "↵ Open   ⇧↵ New here   ⌘N New session   ⌘⇧N Choose provider   Esc Close"
         keys.font = .systemFont(ofSize: 10); keys.textColor = .secondaryLabelColor
         footer.addArrangedSubview(keys)
         let gear = NSButton(image: NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Settings")!, target: self, action: #selector(settingsClicked)); gear.isBordered = false
@@ -73,12 +93,31 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     }
     deinit { if let monitor { NSEvent.removeMonitor(monitor) }; timer?.invalidate() }
     func apply(_ settings: Settings) {
-        self.settings = settings; days = settings.defaultDays; recent = !settings.folders
+        let sourcesChanged = self.settings.enabledProviders != settings.enabledProviders
+        if sourcesChanged { generation += 1 }
+        if self.settings.defaultDays != settings.defaultDays { days = settings.defaultDays }
+        if self.settings.folders != settings.folders { recent = !settings.folders }
+        self.settings = settings
+        search.placeholderString = "Search " + settings.enabledProviders.map(\.title).joined(separator: " and ") + " sessions"
+        table.setAccessibilityLabel(settings.enabledProviders.map(\.title).joined(separator: " and ") + " sessions")
         views.selectedSegment = recent ? 0 : 1
         ranges.selectedSegment = dateWindows.firstIndex(of: days) ?? 2
-        if panel.isVisible { reload() }
+        providers.selectedSegment = ProviderFilter.allCases.firstIndex(of: settings.providerFilter) ?? 0
+        providers.isHidden = settings.enabledProviders.count == 1
+        for (index, filter) in ProviderFilter.allCases.enumerated() {
+            providers.setEnabled(filter == .all || settings.enabledProviders.contains(where: { filter.includes($0) }), forSegment: index)
+        }
+        newProvider.removeAllItems(); newProvider.addItems(withTitles: settings.enabledProviders.map { "New: " + $0.title })
+        newProvider.selectItem(at: settings.enabledProviders.firstIndex(of: settings.newProvider) ?? 0)
+        newProvider.isEnabled = settings.enabledProviders.count > 1
+        newProvider.isHidden = settings.enabledProviders.count == 1
+        newProviderValue.isHidden = settings.enabledProviders.count > 1
+        newProviderValue.stringValue = "New: " + settings.newProvider.title
+        keys.stringValue = "↵ Open   ⇧↵ New here   ⌘N New session   " + (settings.enabledProviders.count > 1 ? "⌘⇧N Choose provider   " : "") + "Esc Close"
+        if panel.isVisible { reload(); if sourcesChanged { refresh() } }
     }
     func show(repeatedHotkey: Bool = false) {
+        guard !launching else { return }
         if panel.isVisible {
             if repeatedHotkey { newSession() } else { panel.makeKeyAndOrderFront(nil); panel.makeFirstResponder(search) }
             return
@@ -110,26 +149,35 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     func refresh() {
         guard !loading else { return }; loading = true
         let request = generation
-        engine.perform({ service, _ in try service.collect(days: 0) }) { [weak self] result in
+        engine.perform({ service, env in
+            let enabled = Settings.load().resolvingProviders(environment: env).enabledProviders
+            let sessions = try service.collect(days: 0, provider: .all, enabledProviders: enabled)
+            return (sessions, service.issues, enabled.filter { $0.isInstalled(environment: env) })
+        }) { [weak self] result in
             guard let self else { return }; self.loading = false
             guard self.panel.isVisible, request == self.generation else {
                 if self.panel.isVisible { self.refresh() }; return
             }
             switch result {
-            case .success(let sessions):
-                self.sessions = sessions; self.reload()
-                self.message.stringValue = sessions.contains { $0.status == "unknown" } ? "Live status unavailable. Resuming is disabled; start clean or retry with ⌘R." : "Refreshes every 5 seconds · \(self.settings.hotkeyLabel) again starts a dated session"
+            case .success(let payload):
+                self.sessions = payload.0; self.issues = payload.1; self.installedProviders = payload.2; self.reload()
             case .failure(let error): self.message.stringValue = error.localizedDescription; self.empty.stringValue = "Couldn’t load sessions. Press ⌘R to retry."
             }
         }
     }
     func reload() {
-        let keep = selected?.id
+        let keep = selected?.key
         let cutoff = days == 0 ? 0 : Date().timeIntervalSince1970 - Double(days) * 86400
-        rows = sessionRows(sessions.filter { $0.isLive || $0.mtime >= cutoff }, query: search.stringValue, recent: recent, tree: false)
+        rows = sessionRows(sessions.filter { settings.enabledProviders.contains($0.provider) && settings.providerFilter.includes($0.provider) && ($0.isLive || $0.mtime >= cutoff) }, query: search.stringValue, recent: recent, tree: false)
         table.reloadData(); count.stringValue = "\(rows.filter { $0.session != nil }.count) sessions"
-        empty.isHidden = rows.contains { $0.session != nil }; empty.stringValue = "No sessions in this range"
-        if let keep, let row = rows.firstIndex(where: { $0.session?.id == keep }) { select(row) }
+        empty.isHidden = rows.contains { $0.session != nil }; empty.stringValue = search.stringValue.isEmpty ? "No sessions in this range" : "No sessions match"
+        if sessions.isEmpty, let installedProviders, installedProviders.isEmpty {
+            empty.stringValue = "Install " + settings.enabledProviders.map { $0 == .claude ? "Claude Code" : "Codex" }.joined(separator: " or ") + " to get started"
+        }
+        let warnings = issues.filter { settings.enabledProviders.contains($0.key) && settings.providerFilter.includes($0.key) }.sorted { $0.key.rawValue < $1.key.rawValue }.map(\.value)
+        message.stringValue = warnings.isEmpty ? "Refreshes every 5 seconds · \(settings.hotkeyLabel) again starts a new \(settings.newProvider.title) session" : warnings.joined(separator: " · ")
+        message.toolTip = message.stringValue
+        if let keep, let row = rows.firstIndex(where: { $0.session?.key == keep }) { select(row) }
         else if let row = rows.firstIndex(where: { $0.session != nil }) { select(row) }
     }
     var selected: Session? { table.selectedRow >= 0 && table.selectedRow < rows.count ? rows[table.selectedRow].session : nil }
@@ -155,7 +203,11 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         case 123 where command, 124 where command:
             days = cycleWindow(days, step: event.keyCode == 124 ? 1 : -1)
             ranges.selectedSegment = dateWindows.firstIndex(of: days) ?? 2; reload()
-        case 45 where command: newSession()
+        case 45 where command:
+            if event.modifierFlags.contains(.shift) { newProvider.performClick(nil) } else { newSession() }
+        case 18 where command: selectFilter(.all)
+        case 19 where command: selectFilter(.claude)
+        case 20 where command: selectFilter(.codex)
         case 15 where command: refresh()
         case 43 where command: settingsClicked()
         default: return false
@@ -165,6 +217,20 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     func controlTextDidChange(_ obj: Notification) { reload() }
     @objc func changeView() { recent = views.selectedSegment == 0; reload(); panel.makeFirstResponder(search) }
     @objc func changeRange() { days = dateWindows[ranges.selectedSegment]; reload(); panel.makeFirstResponder(search) }
+    @objc private func changeProvider() { selectFilter(ProviderFilter.allCases[providers.selectedSegment]) }
+    func selectFilter(_ filter: ProviderFilter) {
+        guard filter == .all || settings.enabledProviders.contains(where: { filter.includes($0) }) else { return }
+        var value = Settings.load(); value.providerFilter = filter
+        do { try onSave?(value) }
+        catch { providers.selectedSegment = ProviderFilter.allCases.firstIndex(of: settings.providerFilter) ?? 0; showError(error, window: panel) }
+        panel.makeFirstResponder(search)
+    }
+    @objc private func changeNewProvider() {
+        var value = Settings.load(); value.newProvider = settings.enabledProviders[max(0, newProvider.indexOfSelectedItem)]
+        do { try onSave?(value) }
+        catch { newProvider.selectItem(at: settings.enabledProviders.firstIndex(of: settings.newProvider) ?? 0); showError(error, window: panel) }
+        panel.makeFirstResponder(search)
+    }
     @objc func clicked() { if table.clickedRow >= 0 { activateSelected(fresh: NSEvent.modifierFlags.contains(.shift)) } }
     @objc func settingsClicked() { onSettings?() }
     func activateSelected(fresh: Bool) {
@@ -188,10 +254,13 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         engine.perform({ service, _ in try service.activate(s, fresh: fresh) }) { if case .failure(let error) = $0 { showError(error) } }
     }
     func newSession() {
-        guard !asking else { return }; hide()
+        guard !asking, !launching else { return }; launching = true; hide()
         let preferences = settings
         let cli = AppInstallation.cli.path
-        engine.perform({ service, env in try NewSessions(service: service, settings: preferences, environment: env).start(cliPath: cli) }) { if case .failure(let error) = $0 { showError(error) } }
+        engine.perform({ service, env in try NewSessions(service: service, settings: preferences, environment: env).start(cliPath: cli) }) { [weak self] result in
+            self?.launching = false
+            if case .failure(let error) = result { showError(error) }
+        }
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { rows[row].session != nil }

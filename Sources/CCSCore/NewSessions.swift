@@ -42,15 +42,19 @@ public final class NewSessions {
         throw CCSError.message("No session folder numbers remain for today.")
     }
 
-    @discardableResult public func start(cliPath: String) throws -> URL {
-        let root = settings.newRoot(environment: environment)
-        if settings.cleanup, let files = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) {
-            try? prune(files, minimumAge: 300)
+    @discardableResult public func start(cliPath: String, provider: Provider? = nil) throws -> URL {
+        let provider = provider ?? settings.resolvingProviders(environment: environment).newProvider
+        guard provider.isInstalled(environment: environment) else {
+            throw CCSError.message("The \(provider.command) command was not found. Install \(provider.title), then restart CCS so it reads your updated shell PATH.")
         }
+        let root = settings.newRoot(environment: environment)
+        let abandoned = settings.cleanup ? (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) : nil
         let path = try create(root: root)
         let cleanup = settings.cleanup ? "; cd; \(shellQuote(cliPath)) --prune \(shellQuote(path.path))" : ""
-        do { try service.openTerminal("cd \(shellQuote(path.path)) && claude\(cleanup)") }
+        do { try service.openTerminal("cd \(shellQuote(path.path)) && \(provider.command)\(cleanup)") }
         catch { _ = rmdir(path.path); throw error }
+        // Opening a new session takes precedence over scanning old folders.
+        if let abandoned { try? prune(abandoned, minimumAge: 300) }
         return path
     }
 
@@ -71,7 +75,8 @@ public final class NewSessions {
         let busy = Set(result.out.split(separator: "\n").filter { $0.hasPrefix("n") }.map { String($0.dropFirst()) })
         guard !busy.isEmpty else { return }
         let sessions = try service.index.load(requireComplete: true)
-        let named = busy.union(sessions.values.map { $0.cwd })
+        let codex = try service.codex.savedWorkingDirectories()
+        let named = busy.union(sessions.values.map { $0.cwd }).union(codex)
         let used = named.union(named.map { physicalPath($0) })
         for path in candidates {
             let absolute = path.standardizedFileURL.path, resolved = physicalPath(path.path)

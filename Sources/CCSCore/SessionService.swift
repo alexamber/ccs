@@ -3,8 +3,12 @@ import Foundation
 public final class SessionService {
     public let index: SessionIndex
     public let runner: CommandRunner
-    public init(index: SessionIndex = SessionIndex(), runner: @escaping CommandRunner = ProcessRunner().command) {
-        self.index = index; self.runner = runner
+    public let codex: CodexProvider
+    public private(set) var issues = [Provider: String]()
+    public private(set) var historyFailures = Set<Provider>()
+    public init(index: SessionIndex = SessionIndex(), runner: @escaping CommandRunner = ProcessRunner().command,
+                codex: CodexProvider = CodexProvider()) {
+        self.index = index; self.runner = runner; self.codex = codex
     }
 
     public func liveSessions() -> [String: LiveSession]? {
@@ -14,9 +18,27 @@ public final class SessionService {
         return Dictionary(records.map { ($0.sessionId, $0) }, uniquingKeysWith: { _, new in new })
     }
 
-    public func collect(days: Int) throws -> [Session] {
+    public func collect(days: Int, provider: ProviderFilter = .claude, enabledProviders: [Provider] = Provider.allCases) throws -> [Session] {
+        var sessions = [Session]()
+        if provider.includes(.claude), enabledProviders.contains(.claude) {
+            do { sessions += try collectClaude(days: days); historyFailures.remove(.claude) }
+            catch {
+                historyFailures.insert(.claude)
+                if provider == .claude { throw error }
+                issues[.claude] = "Claude history unavailable. Codex sessions are still available."
+            }
+        }
+        if provider.includes(.codex), enabledProviders.contains(.codex) {
+            sessions += codex.collect(days: days)
+            issues[.codex] = codex.issue
+            if codex.historyAvailable { historyFailures.remove(.codex) } else { historyFailures.insert(.codex) }
+        }
+        return sessions.sorted { $0.mtime == $1.mtime ? $0.key < $1.key : $0.mtime > $1.mtime }
+    }
+    private func collectClaude(days: Int) throws -> [Session] {
         var sessions = try index.load(days: days)
         if let running = liveSessions() {
+            issues[.claude] = nil
             for (id, live) in running {
                 var s = sessions[id] ?? Session(id: id, cwd: live.cwd ?? "", mtime: (live.startedAt ?? 0) / 1000)
                 s.live = live; s.status = cleanText(live.status).nonempty ?? "open"
@@ -24,18 +46,27 @@ public final class SessionService {
                 sessions[id] = s
             }
         } else {
+            issues[.claude] = "Claude live status unavailable; resume is disabled. Start clean or refresh."
             for id in Array(sessions.keys) { sessions[id]?.status = "unknown" }
         }
         return sessions.values.sorted { $0.mtime > $1.mtime }
     }
 
-    public func activate(id: String, fresh: Bool = false) throws {
-        guard let s = try collect(days: 0).first(where: { $0.id == id }) else {
-            throw CCSError.message("No Claude Code session with id \(id).")
+    public func activate(id: String, fresh: Bool = false, provider: ProviderFilter = .all, enabledProviders: [Provider] = Provider.allCases) throws {
+        let parts = id.split(separator: ":", maxSplits: 1).map(String.init)
+        let qualified = parts.count == 2 && Provider(rawValue: parts[0]) != nil ? ProviderFilter(rawValue: parts[0]) : nil
+        let scope = qualified ?? provider
+        let rawID = qualified == nil ? id : parts[1]
+        let matches = try collect(days: 0, provider: scope, enabledProviders: qualified == nil ? enabledProviders : Provider.allCases).filter { $0.id == rawID }
+        if scope == .codex && !codex.historyAvailable { throw CCSError.message(codex.issue ?? "Codex history unavailable.") }
+        guard matches.count <= 1 else { throw CCSError.message("This ID exists in both providers. Use claude:ID or codex:ID.") }
+        guard let s = matches.first else {
+            throw CCSError.message("No session with id \(id).")
         }
         try activate(s, fresh: fresh)
     }
     public func activate(_ s: Session, fresh: Bool = false) throws {
+        if s.provider == .codex { return try activateCodex(s, fresh: fresh) }
         if fresh { try openTerminal("cd \(shellQuote(s.cwd)) && claude"); return }
         // Always refresh at activation time. A stale screen must not authorize a duplicate resume.
         guard let running = liveSessions() else {
@@ -53,6 +84,20 @@ public final class SessionService {
             }
             try openTerminal("claude attach \(shellQuote(live.name?.nonempty ?? s.id))")
         } else { try openTerminal("cd \(shellQuote(s.cwd)) && claude --resume \(shellQuote(s.id))") }
+    }
+
+    private func activateCodex(_ s: Session, fresh: Bool) throws {
+        if fresh { try openTerminal("cd \(shellQuote(s.cwd)) && codex"); return }
+        let current = try codex.current(s.id)
+        if let processes = try? runner("/bin/ps", ["-axo", "pid=,ppid=,tty=,command="], nil, 5), processes.code == 0 {
+            let ttys = CodexProvider.candidateTTYs(id: current.id, processList: processes.out, localSocketPath: codex.sharedSocketPath)
+            if !ttys.isEmpty {
+                let focus = try runner("/usr/bin/osascript", ["-"] + ttys.map { "/dev/" + $0 }, Self.focusScript, 15)
+                if focus.code != 0 { throw CCSError.message(focus.err.nonempty ?? "Terminal automation failed.") }
+                if focus.out.trimmingCharacters(in: .whitespacesAndNewlines) == "ok" { return }
+            }
+        }
+        try openTerminal(codex.resumeCommand(current))
     }
 
     public func openTerminal(_ command: String) throws {
@@ -123,7 +168,7 @@ public final class SessionService {
 
 // Enough shell tokenization to compare the first attach argument exactly,
 // including shell-quoted names. Never execute or evaluate the process text.
-private func shellWords(_ text: String) -> [String] {
+func shellWords(_ text: String) -> [String] {
     var words = [String](), word = "", quote: Character?, escaped = false
     for c in text {
         if escaped { word.append(c); escaped = false; continue }

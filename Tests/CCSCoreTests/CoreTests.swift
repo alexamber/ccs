@@ -3,6 +3,16 @@ import XCTest
 @testable import CCSCore
 
 final class CoreTests: XCTestCase {
+    func testDistinctRapidPressesRegisterWithoutAcceptingHeldKeyRepeat() {
+        var gate = KeyPressGate()
+        XCTAssertTrue(gate.press())
+        XCTAssertFalse(gate.press())
+        gate.release()
+        XCTAssertTrue(gate.press())
+        XCTAssertFalse(gate.press())
+        gate.release()
+        XCTAssertTrue(gate.press())
+    }
     func testLegacyExportKeepsOptionalFieldsAndDoesNotExportPromptSearchText() throws {
         let s = Session(id: "example", cwd: "/tmp/work", title: "Title", prompts: "private prompt text")
         let data = try JSONEncoder().encode(ExportSession(s, home: "/Users/example"))

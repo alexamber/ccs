@@ -1,9 +1,9 @@
 cask "ccs" do
-  version "0.2.0"
-  sha256 "78d74976b23daed7c827e1592e0326d51c560b1af9a946ba6ff769dab759581a"
+  version "0.3.0"
+  sha256 "3969cc447cc7ed2faed1ed74010757cb8ab010ee92bcbc48e1f95055a0795544"
   url "https://github.com/alexamber/ccs/releases/download/v#{version}/CCS-#{version}-macos-universal.dmg"
   name "CCS"
-  desc "Native macOS and terminal picker for Claude Code sessions"
+  desc "Native macOS and terminal picker for Claude Code and Codex"
   homepage "https://github.com/alexamber/ccs"
   depends_on macos: :sonoma
   app "CCS.app"

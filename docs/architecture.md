@@ -21,9 +21,22 @@ and metadata cache; neither executable depends on Hammerspoon or Python.
 
 Session metadata comes from Claude's local transcripts. Live status is refreshed
 from `claude agents --json`, including immediately before activation. An unknown
-live state prevents resume. Existing Terminal tabs are matched by process TTY;
+live state prevents Claude resume. Existing Terminal tabs are matched by process TTY;
 commands are passed as quoted arguments to AppleScript rather than interpolated
 into AppleScript source.
+
+Codex history comes from read-only `thread/list` and `thread/read` requests.
+`CodexRPCConnection` uses WebSocket framing over the existing daemon’s local Unix
+socket, with an owned JSONL metadata process as a fallback. It opens no listening
+TCP port. The fallback cannot establish global live state. Metadata reads never
+call thread/resume, start turns, or approve server requests. Frames, waits and
+pagination are bounded; incomplete metadata cannot authorize folder cleanup.
+
+Session selection uses provider-qualified keys. Existing Claude JSON remains
+compatible; explicit combined exports include provider identity and nulls for
+unavailable Codex statistics. Settings auto-detect providers until the first
+successful setup, then retain explicit enabled-provider and new-provider choices.
+UI/CLI preference changes are propagated through distributed notifications.
 
 New folders use a cross-process lock and a persistent daily high-water counter.
 Cleanup requires an empty, correctly named, nonsymlink folder, a complete saved
@@ -37,6 +50,8 @@ installer use the same implementation. `macOS/Info.plist` is the version source.
 `TransientUIDismissal` closes the picker and status menu on outside clicks and
 application switches. Outside clicks retain their normal delivery and focus.
 Native menu tracking and modal confirmation sheets retain AppKit's behavior.
+The Carbon shortcut tracks press/release events rather than suppressing quick
+presses with a timer; held-key repeats do not launch repeated sessions.
 
 Releases use Developer ID signing, hardened runtime, Apple-events entitlement,
 notarization and stapling. Direct distribution retains the Terminal/process

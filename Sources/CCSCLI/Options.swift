@@ -14,8 +14,9 @@ struct Options {
     var days: Int
     var recent = false, fresh = false
     var watch = 0
+    var provider: ProviderFilter?
     static let help = """
-Browse Claude Code sessions in a terminal picker or a native macOS popup.
+Browse Claude Code and Codex sessions in a terminal picker or native macOS popup.
 
 Usage: ccs [options]
   --days DAYS        Closed-session age limit (0 = all; default: saved setting)
@@ -23,9 +24,10 @@ Usage: ccs [options]
   -r, --recent       Show newest sessions first
   -w, --watch [SEC]  Keep picker open and refresh (default: 5 seconds)
   --json             Export metadata, newest first
+  --provider NAME    all, claude, or codex; override the saved providers for this command
   --activate ID      Focus, attach, or resume a session
   --fresh            With --activate: start clean in that folder
-  --new              Start Claude in a new dated folder
+  --new              Start the remembered provider in a dated folder
   --prune FOLDER     Remove only an unused, empty dated folder
   --gui              Open the native popup
   --install-cli      Install ccs into ~/.local/bin (backs up an existing command)
@@ -33,13 +35,16 @@ Usage: ccs [options]
   -h, --help         Show this help
 
 Picker: Enter opens; Ctrl-O starts clean here; Ctrl-T starts in a dated folder;
-Tab toggles view; Left/Right changes range; Ctrl-R refreshes; Ctrl-C quits.
+Tab toggles view; Left/Right changes range; Ctrl-F changes provider filter;
+Ctrl-B changes the new-session provider; Ctrl-R refreshes; Ctrl-C quits.
+Without --provider, the picker uses your saved providers; --json keeps its
+Claude-only compatible format. Use --provider all --json for combined metadata.
 """
 
     init(arguments: [String], settings: Settings) throws {
         days = settings.defaultDays
         let args = arguments.flatMap { arg -> [String] in
-            if let equal = arg.firstIndex(of: "="), ["--days", "--watch", "--activate", "--prune"].contains(String(arg[..<equal])) {
+            if let equal = arg.firstIndex(of: "="), ["--days", "--watch", "--activate", "--prune", "--provider"].contains(String(arg[..<equal])) {
                 return [String(arg[..<equal]), String(arg[arg.index(after: equal)...])]
             }
             if arg.hasPrefix("-w"), arg.count > 2, !arg.hasPrefix("--") { return ["-w", String(arg.dropFirst(2))] }
@@ -60,6 +65,9 @@ Tab toggles view; Left/Right changes range; Ctrl-R refreshes; Ctrl-C quits.
                 guard let n = Int(try value(arg)), n >= 0 else { throw CLIUsageError(message: "--days must be zero or greater") }
                 days = n
             case "-r", "--recent": recent = true
+            case "--provider":
+                guard let scope = ProviderFilter(rawValue: try value(arg)) else { throw CLIUsageError(message: "--provider must be all, claude, or codex") }
+                provider = scope
             case "-w", "--watch":
                 watch = 5
                 if i + 1 < args.count, let n = Int(args[i + 1]) {
@@ -86,5 +94,6 @@ Tab toggles view; Left/Right changes range; Ctrl-R refreshes; Ctrl-C quits.
         if fresh {
             guard case .activate = action else { throw CLIUsageError(message: "--fresh requires --activate") }
         }
+        if case .new = action, provider == .all { throw CLIUsageError(message: "For --new, choose --provider claude or --provider codex.") }
     }
 }

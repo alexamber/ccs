@@ -9,6 +9,10 @@ final class Preferences: NSObject {
     private let engine: Engine
     private let shortcut = ShortcutRecorder()
     private let days = NSPopUpButton()
+    private let newProvider = NSPopUpButton()
+    private let newProviderValue = NSTextField(labelWithString: "")
+    private let claudeToggle = NSButton(checkboxWithTitle: "Claude", target: nil, action: nil)
+    private let codexToggle = NSButton(checkboxWithTitle: "Codex", target: nil, action: nil)
     private let grouping = NSSegmentedControl(labels: ["Recent", "Folders"], trackingMode: .selectOne, target: nil, action: nil)
     private let folder = NSTextField(labelWithString: "")
     private let folderHint = NSTextField(labelWithString: "")
@@ -27,7 +31,7 @@ final class Preferences: NSObject {
 
     init(settings: Settings, engine: Engine) {
         self.settings = settings; self.engine = engine
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 362), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 426), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init()
         window.title = "CCS Settings"; window.isReleasedWhenClosed = false; window.center()
         shortcut.controlSize = .small; shortcut.font = .systemFont(ofSize: 12)
@@ -46,6 +50,17 @@ final class Preferences: NSObject {
         days.setAccessibilityLabel("Default date range")
         grouping.selectedSegment = settings.folders ? 1 : 0
         grouping.setAccessibilityLabel("Default session view")
+        newProvider.addItems(withTitles: Provider.allCases.map(\.title))
+        newProvider.selectItem(at: Provider.allCases.firstIndex(of: settings.newProvider) ?? 0)
+        newProvider.controlSize = .small; newProvider.font = .systemFont(ofSize: 12)
+        newProvider.target = self; newProvider.action = #selector(changeNewProvider)
+        newProvider.setAccessibilityLabel("Provider for new dated sessions")
+        newProviderValue.font = .systemFont(ofSize: 12)
+        newProvider.toolTip = "Used by \(settings.hotkeyLabel) again, ⌘N, and ccs --new. Shift-Enter uses the selected session’s provider."
+        for toggle in [claudeToggle, codexToggle] {
+            toggle.controlSize = .small; toggle.font = .systemFont(ofSize: 12)
+            toggle.target = self; toggle.action = #selector(changeEnabledProviders)
+        }
         cleanup.state = settings.cleanup ? .on : .off; cleanup.setAccessibilityLabel("Clean up empty session folders")
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off; login.setAccessibilityLabel("Start at login")
         for control in [days as NSControl, grouping, cleanup] {
@@ -63,7 +78,9 @@ final class Preferences: NSObject {
         cleanupHelp.widthAnchor.constraint(equalToConstant: 16).isActive = true
         let cleanupLabel = NSStackView(views: [label("Clean up empty folders"), cleanupHelp]); cleanupLabel.spacing = 5
         let defaults = NSStackView(views: [grouping, days]); defaults.spacing = 8
-        let picker = section("Picker", rows: [row(label("Shortcut"), shortcut), row(label("Open with"), defaults), row(label("Start at login"), login)])
+        let sources = NSStackView(views: [claudeToggle, codexToggle]); sources.spacing = 14
+        let newChoice = NSStackView(views: [newProvider, newProviderValue])
+        let picker = section("Picker", rows: [row(label("Providers"), sources), row(label("Shortcut"), shortcut), row(label("Open with"), defaults), row(label("New sessions"), newChoice), row(label("Start at login"), login)])
         let sessions = section("Sessions", rows: [row(folderText, choose, minimumHeight: 28), row(cleanupLabel, cleanup)])
         cliTitle.font = .systemFont(ofSize: 12, weight: .medium)
         cliDetail.font = .systemFont(ofSize: 10); cliDetail.textColor = .secondaryLabelColor; cliDetail.lineBreakMode = .byTruncatingMiddle
@@ -80,7 +97,7 @@ final class Preferences: NSObject {
         for child in stack.arrangedSubviews { child.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
         NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 16), stack.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -16), stack.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 14), stack.bottomAnchor.constraint(lessThanOrEqualTo: window.contentView!.bottomAnchor, constant: -10)])
         window.initialFirstResponder = shortcut
-        refreshFolder(); refreshInstallation(); refreshEnvironment()
+        apply(settings); refreshInstallation(); refreshEnvironment()
     }
     private func label(_ text: String) -> NSTextField {
         let field = NSTextField(labelWithString: text); field.font = .systemFont(ofSize: 12); return field
@@ -109,10 +126,44 @@ final class Preferences: NSObject {
         refreshInstallation(); refreshEnvironment()
         window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
     }
+    func apply(_ value: Settings) {
+        let shortcutChanged = settings.hotkeyCode != value.hotkeyCode || settings.hotkeyModifiers != value.hotkeyModifiers
+        settings = value
+        if shortcutChanged { shortcut.cancelRecording() }
+        if !shortcut.recording { shortcut.title = value.hotkeyLabel; shortcut.savedTitle = value.hotkeyLabel }
+        days.selectItem(at: dateWindows.firstIndex(of: value.defaultDays) ?? 2)
+        grouping.selectedSegment = value.folders ? 1 : 0
+        newProvider.removeAllItems(); newProvider.addItems(withTitles: value.enabledProviders.map(\.title))
+        newProvider.selectItem(at: value.enabledProviders.firstIndex(of: value.newProvider) ?? 0)
+        newProvider.isEnabled = value.enabledProviders.count > 1
+        newProvider.isHidden = value.enabledProviders.count == 1
+        newProviderValue.isHidden = value.enabledProviders.count > 1
+        newProviderValue.stringValue = value.newProvider.title
+        for (provider, toggle) in [(Provider.claude, claudeToggle), (Provider.codex, codexToggle)] {
+            let enabled = value.enabledProviders.contains(provider)
+            toggle.state = enabled ? .on : .off; toggle.isEnabled = !enabled || value.enabledProviders.count > 1
+            toggle.toolTip = !toggle.isEnabled ? "Enable another provider before turning this one off" : provider.isInstalled(environment: environment) ? "Show \(provider.title) sessions" : "\(provider.title) command is not on your shell PATH; install it to open sessions"
+        }
+        cleanup.state = value.cleanup ? .on : .off
+        refreshFolder()
+    }
+    @objc private func changeNewProvider() {
+        let old = settings
+        settings.newProvider = settings.enabledProviders[max(0, newProvider.indexOfSelectedItem)]
+        do { try onSave?(settings) }
+        catch { apply(old); showError(error, window: window) }
+    }
+    @objc private func changeEnabledProviders() {
+        let old = settings
+        settings.enabledProviders = [(Provider.claude, claudeToggle), (Provider.codex, codexToggle)].filter { $0.1.state == .on }.map(\.0)
+        settings = settings.resolvingProviders(environment: environment)
+        do { try onSave?(settings) }
+        catch { apply(old); showError(error, window: window) }
+    }
     private func refreshEnvironment() {
         engine.perform({ _, env in env }) { [weak self] result in
             guard let self, case .success(let env) = result else { return }
-            self.environment = env; self.refreshFolder(); self.refreshInstallation()
+            self.environment = env; self.apply(self.settings); self.refreshInstallation()
         }
     }
     private func refreshFolder() {

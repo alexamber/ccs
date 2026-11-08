@@ -16,13 +16,18 @@ final class PickerRow: NSTableRowView {
 final class SessionCell: NSTableCellView {
     init(session s: Session, recent: Bool) {
         super.init(frame: .zero)
-        let icon = NSImageView(image: NSImage(systemSymbolName: s.status == "closed" ? "circle" : s.status == "unknown" ? "questionmark.circle" : "circle.fill", accessibilityDescription: s.status)!)
-        icon.contentTintColor = s.status == "idle" ? .systemGreen : s.status == "closed" ? .secondaryLabelColor : s.status == "unknown" ? .systemPurple : .systemOrange
+        let icon = NSImageView(image: NSImage(systemSymbolName: s.isSaved ? "circle" : s.status == "unknown" ? "questionmark.circle" : "circle.fill", accessibilityDescription: s.status)!)
+        icon.contentTintColor = s.status == "idle" ? .systemGreen : s.isSaved ? .secondaryLabelColor : s.status == "unknown" ? .systemPurple : .systemOrange
         let title = NSTextField(labelWithString: s.displayTitle); title.font = .systemFont(ofSize: 13, weight: .medium); title.lineBreakMode = .byTruncatingTail
-        let sub = NSTextField(labelWithString: [s.name.map { "[\($0)]" }, recent ? shortPath(s.cwd) : nil, s.recap.nonEmpty].compactMap { $0 }.joined(separator: " · "))
+        let badge = NSTextField(labelWithString: " \(s.provider.title) ")
+        badge.font = .systemFont(ofSize: 9, weight: .semibold); badge.textColor = s.provider == .codex ? .systemTeal : .systemOrange
+        badge.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let heading = NSStackView(views: [title, badge]); heading.spacing = 6
+        let excerpt = s.provider == .codex && !s.prompts.hasPrefix(s.title) ? String(s.prompts.prefix(160)) : s.recap
+        let sub = NSTextField(labelWithString: [s.name.map { "[\($0)]" }, recent ? shortPath(s.cwd) : nil, excerpt.nonEmpty].compactMap { $0 }.joined(separator: " · "))
         sub.font = .systemFont(ofSize: 11); sub.textColor = .secondaryLabelColor; sub.lineBreakMode = .byTruncatingTail
-        let text = NSStackView(views: [title, sub]); text.orientation = .vertical; text.alignment = .leading; text.spacing = 2
-        let stats = NSTextField(labelWithString: "\(s.turns)p\(s.cost.map { $0 > 0 ? " · $\(Int($0.rounded()))" : "" } ?? "")")
+        let text = NSStackView(views: [heading, sub]); text.orientation = .vertical; text.alignment = .leading; text.spacing = 2
+        let stats = NSTextField(labelWithString: s.statistics)
         stats.font = .monospacedDigitSystemFont(ofSize: 11, weight: s.isLarge ? .semibold : .regular); stats.textColor = s.isLarge ? .systemPurple : .secondaryLabelColor
         let age = NSTextField(labelWithString: ageString(s.mtime)); age.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular); age.textColor = .secondaryLabelColor; age.alignment = .right
         for view in [icon, text, stats, age] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
@@ -32,7 +37,7 @@ final class SessionCell: NSTableCellView {
             age.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8), age.centerYAnchor.constraint(equalTo: centerYAnchor), age.widthAnchor.constraint(equalToConstant: 36),
             stats.trailingAnchor.constraint(equalTo: age.leadingAnchor, constant: -10), stats.centerYAnchor.constraint(equalTo: centerYAnchor)])
         stats.setContentCompressionResistancePriority(.required, for: .horizontal)
-        setAccessibilityLabel("\(s.displayTitle), \(s.status), \(shortPath(s.cwd)), \(s.turns) prompts")
+        setAccessibilityLabel("\(s.displayTitle), \(s.provider.title), \(s.status), \(shortPath(s.cwd))\(s.provider == .claude ? ", \(s.turns) prompts" : "")")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }

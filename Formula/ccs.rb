@@ -1,5 +1,5 @@
 class Ccs < Formula
-  desc "Native macOS and terminal picker for Claude Code sessions"
+  desc "Native macOS and terminal picker for Claude Code and Codex"
   homepage "https://github.com/alexamber/ccs"
   license "MIT"
   head "https://github.com/alexamber/ccs.git", branch: "main"
@@ -15,7 +15,7 @@ class Ccs < Formula
   end
 
   test do
-    assert_match "Browse Claude Code sessions", shell_output("#{bin}/ccs --help")
+    assert_match "Browse Claude Code and Codex sessions", shell_output("#{bin}/ccs --help")
     assert_empty shell_output("HOME=#{testpath} #{bin}/ccs --list")
   end
 end

@@ -29,7 +29,11 @@ with tempfile.TemporaryDirectory(prefix="ccs-native-check-") as temp:
     bin_dir.mkdir()
     (bin_dir / "claude").write_text("#!/bin/sh\nprintf '[]\\n'\n")
     (bin_dir / "claude").chmod(0o755)
-    env = {**os.environ, "HOME": str(home), "PATH": str(bin_dir) + ":/usr/bin:/bin", "TERM": "xterm-256color", "CCS_SETTINGS_PATH": str(home / "settings.json")}
+    fixture = Path(__file__).resolve().parents[1] / "Tests/Fixtures/codex.py"
+    (bin_dir / "codex").write_text("#!" + sys.executable + "\n" + fixture.read_text().split("\n", 1)[1])
+    (bin_dir / "codex").chmod(0o755)
+    (home / ".codex").mkdir()
+    env = {**os.environ, "HOME": str(home), "CODEX_HOME": str(home / ".codex"), "PATH": str(bin_dir) + ":/usr/bin:/bin", "TERM": "xterm-256color", "CCS_SETTINGS_PATH": str(home / "settings.json")}
 
     def run(*args, code=0):
         result = subprocess.run([str(binary), *args], env=env, capture_output=True, text=True, timeout=20)
@@ -42,7 +46,34 @@ with tempfile.TemporaryDirectory(prefix="ccs-native-check-") as temp:
     assert exported[0]["cost"] == 1.25
     assert exported[0]["name"] is None
     assert "prompts" not in exported[0]
+    assert "provider" not in exported[0] and "key" not in exported[0]
     assert "Authentication fix" in run("--list")
+    combined = json.loads(run("--provider", "all", "--json"))
+    assert len(combined) == 3 and len({s["key"] for s in combined}) == 3
+    assert {s["provider"] for s in combined} == {"claude", "codex"}
+    codex = json.loads(run("--provider=codex", "--json"))
+    assert len(codex) == 2 and all(s["turns"] is None and s["cost"] is None for s in codex)
+    assert not any("Hidden" in s["title"] for s in codex)
+    # Auto-detection works even when old history from the other tool remains.
+    (bin_dir / "claude").rename(bin_dir / "claude.disabled")
+    listing = run("--list")
+    assert "Codex authentication review" in listing and "Authentication fix" not in listing
+    (bin_dir / "claude.disabled").rename(bin_dir / "claude")
+    (bin_dir / "codex").rename(bin_dir / "codex.disabled")
+    listing = run("--list")
+    assert "Authentication fix" in listing and "Codex authentication review" not in listing
+    (bin_dir / "codex.disabled").rename(bin_dir / "codex")
+    preference_path = Path(env["CCS_SETTINGS_PATH"])
+    preference_path.write_text(json.dumps({"defaultDays": 7, "folders": False, "newDirectory": "~/ccs-sessions", "cleanup": True,
+                                          "hotkeyCode": 49, "hotkeyModifiers": 2048, "hotkeyLabel": "⌥Space",
+                                          "enabledProviders": ["claude"], "newProvider": "claude"}))
+    assert "Codex authentication review" not in run("--list")
+    assert "Codex authentication review" in run("--provider", "codex", "--list")
+    assert json.loads(preference_path.read_text())["enabledProviders"] == ["claude"]
+    preference_path.unlink()
+    run("--activate", "example", code=1)  # Ambiguous IDs must not open a terminal.
+    run("--provider", "invalid", code=2)
+    run("--provider", "all", "--new", code=2)
     run("--days", "-1", code=2)
     run("--watch", "-1", code=2)
     run("--fresh", code=2)
@@ -66,12 +97,23 @@ with tempfile.TemporaryDirectory(prefix="ccs-native-check-") as temp:
     print("CLI metadata, list, error statuses, installation, version, and flags: passed", flush=True)
 
     unused, in_use = home / "2026-11-08-1", home / "2026-11-08-2"
-    unused.mkdir(); in_use.mkdir()
+    archived, subagent = home / "2026-11-08-3", home / "2026-11-08-4"
+    for folder in (unused, in_use, archived, subagent):
+        folder.mkdir()
     holder = subprocess.Popen(["/bin/sleep", "30"], cwd=in_use)
     try:
         run("--prune", str(unused)); run("--prune", str(in_use))
         assert not unused.exists(), "Unused folder was not pruned"
         assert in_use.exists(), "An active working directory was removed"
+        run("--prune", str(archived)); run("--prune", str(subagent))
+        assert archived.exists() and subagent.exists(), "A saved Codex folder was removed"
+        env["CCS_TEST_CODEX_FAILURE"] = "1"
+        retry = home / "2026-11-08-5"; retry.mkdir()
+        run("--prune", str(retry), code=1)
+        assert retry.exists(), "A folder was pruned when Codex history could not be read"
+        run("--provider", "codex", "--json", code=1)
+        assert json.loads(run("--json"))[0]["title"] == "Authentication fix"
+        env.pop("CCS_TEST_CODEX_FAILURE")
     finally:
         holder.terminate(); holder.wait()
     print("Real-process cleanup protection: passed", flush=True)
@@ -93,11 +135,17 @@ with tempfile.TemporaryDirectory(prefix="ccs-native-check-") as temp:
         assert fragment in output, (fragment, bytes(output[-1500:]))
 
     try:
-        read_until(b"Claude sessions")
+        read_until(b"CCS sessions")
         output.clear(); os.write(master, b"nothing-matches-this")
         read_until(b"No sessions match")
         os.write(master, b"\x1b")
         output.clear(); read_until(b"Authentication fix")
+        output.clear(); os.write(master, b"\x06\x06")  # All → Claude → Codex.
+        read_until(b"Codex authentication review")
+        output.clear(); os.write(master, b"\x02")
+        # ncurses may emit only the changed suffix of "Claude" → "Codex".
+        read_until(b"odex")
+        assert json.loads(Path(env["CCS_SETTINGS_PATH"]).read_text())["newProvider"] == "codex"
         os.write(master, b"\x03")
         # Continue draining the PTY while curses restores terminal modes. A
         # parent waiting without draining can block the child's final redraw.

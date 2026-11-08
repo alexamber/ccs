@@ -1,15 +1,16 @@
 # CCS
 
-A native macOS popup and terminal picker for Claude Code sessions. Search saved
+A native macOS popup and terminal picker for Claude Code and Codex. Search saved
 sessions, focus an existing Terminal tab, resume a closed conversation, or start
 clean in a project or a new dated folder.
 
-CCS requires macOS 14 or later, Terminal.app, and an installed `claude` command.
+CCS requires macOS 14 or later, Terminal.app, and at least one installed command:
+`claude` or `codex`.
 The Swift app and CLI share one engine. Neither Python nor Hammerspoon is needed.
 
 ## Install
 
-Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v0.2.0/CCS-0.2.0-macos-universal.dmg),
+Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v0.3.0/CCS-0.3.0-macos-universal.dmg),
 drag CCS into Applications, and open it. Choose **Install Command-Line Tool** in
 the CCS menu to install the terminal picker too. Both Apple Silicon and Intel
 executables are included.
@@ -45,8 +46,10 @@ keys to select, and press Enter to focus, attach, or resume a session.
 
 | Shortcut | Action |
 | --- | --- |
-| Option-Space while open, or Cmd-N | New session in a dated folder |
-| Shift-Enter | Start clean in the selected session's folder |
+| Option-Space while open, or Cmd-N | New dated session using the remembered provider |
+| Cmd-Shift-N | Choose the provider for new sessions |
+| Cmd-1 / Cmd-2 / Cmd-3 | All / Claude / Codex filter |
+| Shift-Enter | Start clean using the selected row’s provider and folder |
 | Tab | Toggle Recent / Folders |
 | Cmd-Left / Cmd-Right | Change the date range |
 | Cmd-R | Refresh |
@@ -62,8 +65,38 @@ line and reload Hammerspoon, or choose another shortcut in CCS Settings.
 
 macOS requests Automation permission when CCS first controls Terminal. Allow it
 in System Settings → Privacy & Security → Automation. Browsing does not require
-Terminal automation. A missing `claude` command or failed live-status check is
-reported; CCS does not resume a session when it cannot verify whether it is open.
+Terminal automation. Missing commands are reported before creating a dated folder.
+Claude resume is disabled when its live status cannot be verified.
+
+## Choose providers
+
+On first launch CCS detects commands on your shell PATH. A Codex-only installation
+starts in Codex mode; a Claude-only installation starts in Claude mode. With both
+installed, both are enabled. Settings → **Providers** lets you enable Claude,
+Codex, or both. Explicit choices are saved and are not changed when another tool
+is installed later. Restart CCS after changing shell PATH.
+
+With one provider enabled, the provider filter is hidden and new sessions use
+that provider. With both enabled, the picker has an **All / Claude / Codex**
+filter and a **New: Claude / Codex** selector. Filtering the list does not change
+the new-session provider. The selector and Settings → **New sessions** share the
+same preference. Shift-Enter always uses the selected row’s provider.
+
+Two distinct Option-Space presses register immediately, including rapid taps.
+Holding the shortcut suppresses auto-repeat. Further presses are ignored while a
+new-session launch is already pending.
+
+Codex history uses the local app-server metadata API. Main CLI/editor/app-server
+conversations appear; archived chats and subagents are hidden. Search covers the
+title, folder and opening prompt. Unknown prompt counts and dollar totals are
+omitted. Integration was verified with Codex CLI 0.167.0.
+
+When available, CCS reads live status from the existing local Codex daemon. If it
+can only read saved metadata, rows show unknown live status. Enter focuses an
+exactly identifiable `codex resume ID` Terminal tab, or opens that conversation
+through Codex CLI. A new view does not submit a prompt. Codex desktop-window focus
+is outside this release. CCS never resumes threads or starts model turns merely
+to list history. See the [official app-server documentation](https://learn.chatgpt.com/docs/app-server).
 
 ## Terminal CLI
 
@@ -78,11 +111,16 @@ ccs --days 0           # all saved sessions
 ccs --watch            # stay open; refresh every 5 seconds
 ccs --watch 10 --recent
 ccs --days 30 --list    # plain text
-ccs --json             # metadata as JSON, newest first
+ccs --json             # compatible Claude-only JSON
+ccs --provider all --json    # combined JSON with provider and qualified key
+ccs --provider codex         # Codex terminal picker
+ccs --provider claude --list # one-command override of saved providers
 ccs --gui              # show the native popup
-ccs --new              # new session in a dated folder
+ccs --new              # remembered provider, new dated folder
+ccs --provider codex --new   # one Codex launch; keeps your app preferences
 ccs --activate ID      # focus, attach, or resume
 ccs --activate ID --fresh
+ccs --activate codex:ID # provider-qualified ID avoids ambiguity
 ```
 
 | Terminal key | Action |
@@ -90,14 +128,24 @@ ccs --activate ID --fresh
 | Up / Down, Page Up / Page Down, Home / End | Select a session |
 | Enter | Focus, attach, or resume |
 | Ctrl-O | Start clean in the selected folder |
-| Ctrl-T | New session in a dated folder |
+| Ctrl-T | New dated session with the displayed new-session provider |
+| Ctrl-F | Cycle provider filter |
+| Ctrl-B | Change the remembered new-session provider |
 | Tab | Toggle folders / recent |
 | Left / Right | Change date range |
 | Type / Backspace / Escape | Search / delete / clear |
 | Ctrl-R / Ctrl-C | Refresh / quit |
 
-Green means idle, orange means another live status, a hollow circle means closed,
-and a question mark means live status is unavailable. Closed sessions with at
+`--provider` overrides saved providers for CLI queries and launches without
+changing app preferences. The popup always respects Settings → Providers. Bare
+`--json` keeps its original Claude-only fields, including explicit nulls and no
+provider field. Combined JSON adds `provider` and `key` (`codex:ID` / `claude:ID`);
+unavailable Codex counts and costs are null. An ID shared by both providers must
+be qualified when activating it. Incomplete history exports fail explicitly.
+
+Green means idle, orange means another live status, a hollow circle means saved,
+and a question mark means live status is unavailable. For Codex, saved status
+describes the connected daemon, not every possible client. Closed Claude sessions with at
 least 20 prompts or $20 recorded cost offer **Start clean here** or **Resume**.
 Recorded cost is saved metadata, not a subscription bill or a price prediction.
 Explicit CLI actions do not show that confirmation dialog.
@@ -112,17 +160,20 @@ Choose another base folder in Settings, or override it in your shell:
 export CCS_NEW_DIR=~/mind/ccs
 ```
 
-Restart CCS after changing shell settings. CCS reads its shell PATH and this
-override at startup. Settings are shared with the CLI in
+Restart CCS after changing shell settings. CCS reads PATH, `CCS_NEW_DIR`, and
+`CODEX_HOME` from your login shell at startup. Settings are shared with the CLI in
 `~/.config/ccs/settings.json`.
 
-When Claude exits, the bundled CLI removes the folder only if it is empty, no
+When Claude or Codex exits, the bundled CLI removes the folder only if it is empty, no
 saved session names it, and no process is using it. Another launch also checks
 abandoned folders older than five minutes. Cleanup keeps symlinks, other folder
 names, nonempty folders, saved-session folders, and folders whose safety cannot
-be verified. Cleanup can be disabled in Settings.
+be verified. Cleanup checks saved folders from both providers, including archived
+Codex chats and subagents, even when hidden from the picker. If a required history
+source is unavailable, folders are kept. Cleanup can be disabled in Settings.
 
-Transcripts remain under `~/.claude/projects`. The native metadata cache in
+Claude transcripts remain under `~/.claude/projects`; Codex retains its own data
+under `CODEX_HOME` (normally `~/.codex`). The Claude metadata cache in
 `~/.cache/ccs/index-v1.json` contains titles, recaps, and prompt excerpts, with
 private file permissions. It may be deleted to rebuild it. Session data is not
 uploaded by CCS.
@@ -142,8 +193,8 @@ generated from the notarized artifact.
 
 See [release and signing instructions](docs/releasing.md) and the
 [architecture guide](docs/architecture.md). CCS uses direct distribution to retain
-Terminal integration and process-aware cleanup. Codex session support is outside this first native
-release. There is an optional HTTPS tip-link slot in the build; no payment page
+Terminal integration and process-aware cleanup. There is an optional HTTPS
+tip-link slot in the build; no payment page
 or paid features are configured.
 
 ## Development

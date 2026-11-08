@@ -24,24 +24,36 @@ public struct Session: Codable, Identifiable {
     public var prompts: String
     public var status: String = "closed"
     public var live: LiveSession?
+    private var storedProvider: Provider?
+    public var provider: Provider {
+        get { storedProvider ?? .claude }
+        set { storedProvider = newValue }
+    }
+    public var key: String { provider.rawValue + ":" + id }
 
     enum CodingKeys: String, CodingKey {
         case id, cwd, mtime, title, name, recap, last, turns, cost, prompts, status
+        case storedProvider = "provider"
     }
 
     public init(id: String, cwd: String, mtime: Double = 0, title: String = "",
                 name: String? = nil, recap: String = "", last: String = "",
-                turns: Int = 0, cost: Double? = nil, prompts: String = "") {
+                turns: Int = 0, cost: Double? = nil, prompts: String = "", provider: Provider = .claude) {
         self.id = id; self.cwd = cwd; self.mtime = mtime; self.title = title
         self.name = name; self.recap = recap; self.last = last
         self.turns = turns; self.cost = cost; self.prompts = prompts
+        self.storedProvider = provider
     }
 
     public var isLarge: Bool { status == "closed" && (turns >= 20 || (cost ?? 0) >= 20) }
     public var displayTitle: String { title.isEmpty ? String(id.prefix(8)) : title }
-    public var isLive: Bool { live != nil }
+    public var isLive: Bool { live != nil || (provider == .codex && ["idle", "active", "waiting", "error"].contains(status)) }
+    public var isSaved: Bool { status == "closed" || status == "saved" }
+    public var statistics: String {
+        provider == .claude ? "\(turns)p\(cost.map { $0 > 0 ? " · $\(Int($0.rounded()))" : "" } ?? "")" : ""
+    }
     public func matches(_ query: String) -> Bool {
-        query.isEmpty || [cwd, title, name ?? "", recap, last, prompts, status]
+        query.isEmpty || [cwd, title, name ?? "", recap, last, prompts, status, provider.title]
             .joined(separator: " ").localizedCaseInsensitiveContains(query)
     }
 }
@@ -52,14 +64,14 @@ public struct ExportSession: Encodable {
     public let status: String, age: String
     public let mtime: Int
     public let recap: String, last: String
-    public let turns: Int
+    public let turns: Int?
     public let cost: Double?
     public let large: Bool
 
     public init(_ s: Session, home: String) {
         id = s.id; dir = shortPath(s.cwd, home: home); title = s.title; name = s.name
         status = s.status; age = ageString(s.mtime); mtime = Int(s.mtime)
-        recap = s.recap; last = s.last; turns = s.turns; cost = s.cost; large = s.isLarge
+        recap = s.recap; last = s.last; turns = s.provider == .claude ? s.turns : nil; cost = s.cost; large = s.isLarge
     }
 
     // Retain the Python CLI's explicit nulls for optional fields.

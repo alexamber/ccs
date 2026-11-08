@@ -66,7 +66,7 @@ Drag CCS.app into Applications, then open it.
 CCS lives in the menu bar. Option-Space opens the session picker.
 Press Option-Space again to start a new session in a dated folder.
 To install the terminal picker, choose Install Command-Line Tool from CCS's menu.
-Claude Code and Terminal.app are required. No Python or Hammerspoon is needed.
+Claude Code or Codex, and Terminal.app, are required. No Python or Hammerspoon is needed.
 TEXT
 artifact="$PWD/dist/CCS-$version-macos-universal$suffix"
 hdiutil create -volname CCS -srcfolder "$stage" -ov -format UDZO "$artifact.dmg"

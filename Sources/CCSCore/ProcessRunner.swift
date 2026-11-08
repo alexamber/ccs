@@ -52,12 +52,13 @@ public final class ProcessRunner {
     public static func loginEnvironment() -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         let shell = env["SHELL"] ?? "/bin/zsh"
-        let probe = "printf '\\036CCS\\000%s\\000%s\\000' \"$PATH\" \"$CCS_NEW_DIR\""
+        let probe = "printf '\\036CCS\\000%s\\000%s\\000%s\\000' \"$PATH\" \"$CCS_NEW_DIR\" \"$CODEX_HOME\""
         if let result = try? ProcessRunner(environment: env).run(shell, ["-l", "-i", "-c", probe], timeout: 10),
            let marker = result.out.range(of: "\u{1e}CCS\0") {
             let parts = result.out[marker.upperBound...].split(separator: "\0", omittingEmptySubsequences: false)
-            if parts.count >= 2 {
+            if parts.count >= 3 {
                 env["PATH"] = String(parts[0]); env["CCS_NEW_DIR"] = String(parts[1])
+                env["CODEX_HOME"] = parts[2].isEmpty ? nil : String(parts[2])
             }
         }
         return env
