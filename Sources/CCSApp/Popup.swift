@@ -13,7 +13,9 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     private let providers = NSSegmentedControl(labels: ProviderFilter.allCases.map(\.title), trackingMode: .selectOne, target: nil, action: nil)
     private let newProvider = NSPopUpButton()
     private let newProviderValue = NSTextField(labelWithString: "")
-    private let keys = NSTextField(labelWithString: "")
+    private let keys = NSTextField(labelWithString: "↵ Open   ⇧↵ New here   ⌃⇥ View   ⌘N New   Esc Close")
+    private let shortcuts = NSButton(title: "Shortcuts", target: nil, action: nil)
+    private var shortcutsPopover: NSPopover?
     private let count = NSTextField(labelWithString: ""), message = NSTextField(labelWithString: "")
     private let empty = NSTextField(labelWithString: "Loading sessions…")
     private var sessions = [Session](), rows = [SessionRow](), timer: Timer?, monitor: Any?
@@ -83,13 +85,24 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         footer.addArrangedSubview(newProvider)
         newProviderValue.font = .systemFont(ofSize: 11, weight: .medium)
         footer.addArrangedSubview(newProviderValue)
-        keys.stringValue = "↵ Open   ⇧↵ New here   ⌘N New session   ⌘⇧N Choose provider   Esc Close"
         keys.font = .systemFont(ofSize: 10); keys.textColor = .secondaryLabelColor
         footer.addArrangedSubview(keys)
-        let gear = NSButton(image: NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Settings")!, target: self, action: #selector(settingsClicked)); gear.isBordered = false
+        shortcuts.target = self; shortcuts.action = #selector(showShortcuts)
+        shortcuts.isBordered = false; shortcuts.font = .systemFont(ofSize: 10)
+        shortcuts.contentTintColor = .secondaryLabelColor
+        shortcuts.toolTip = "All keyboard shortcuts (⌘/)"; shortcuts.setAccessibilityLabel("Keyboard shortcuts")
+        footer.addArrangedSubview(shortcuts)
+        let gear = NSButton(image: NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Settings")!, target: self, action: #selector(settingsClicked)); gear.isBordered = false; gear.toolTip = "Settings (⌘,)"
         footer.addArrangedSubview(gear); stack.addArrangedSubview(footer)
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, self.panel.isVisible, !self.asking, event.window === self.panel else { return event }
+            guard let self, self.panel.isVisible, !self.asking else { return event }
+            if self.shortcutsPopover?.isShown == true {
+                if event.keyCode == 53 || (event.keyCode == 44 && event.modifierFlags.contains(.command)) {
+                    self.shortcutsPopover?.close(); return nil
+                }
+                return event
+            }
+            guard event.window === self.panel else { return event }
             return self.handle(event) ? nil : event
         }
     }
@@ -115,7 +128,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         newProvider.isHidden = settings.enabledProviders.count == 1
         newProviderValue.isHidden = settings.enabledProviders.count > 1
         newProviderValue.stringValue = "New: " + settings.newProvider.title
-        keys.stringValue = "↵ Open   ⇧↵ New here   ⌘N New session   " + (settings.enabledProviders.count > 1 ? "⌘⇧N Choose provider   " : "") + "Esc Close"
+        shortcutsPopover?.close()
         if panel.isVisible { reload(); if sourcesChanged { refresh() } }
     }
     func show(repeatedHotkey: Bool = false) {
@@ -140,6 +153,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     func hide(restoreFocus: Bool = true) {
         guard panel.isVisible, !asking else { return }
         let wasActive = NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+        shortcutsPopover?.close()
         generation += 1; panel.orderOut(nil); timer?.invalidate(); timer = nil
         if restoreFocus && wasActive {
             if let previousApplication { previousApplication.activate(options: []) }
@@ -147,7 +161,12 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         }
         previousApplication = nil
     }
-    func windowDidResignKey(_ notification: Notification) { hide(restoreFocus: false) }
+    func owns(_ window: NSWindow) -> Bool {
+        window === panel || window === shortcutsPopover?.contentViewController?.view.window
+    }
+    func windowDidResignKey(_ notification: Notification) {
+        if shortcutsPopover?.isShown != true { hide(restoreFocus: false) }
+    }
     func refresh() {
         guard !loading else { return }; loading = true
         let request = generation
@@ -217,6 +236,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         case 20 where command: selectFilter(.codex)
         case 15 where command: refresh()
         case 43 where command: settingsClicked()
+        case 44 where command: showShortcuts()
         default: return false
         }
         return true
@@ -240,6 +260,48 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         let row = table.clickedRow
         guard rows.indices.contains(row), rows[row].session != nil else { return }
         select(row); activateSelected(fresh: NSEvent.modifierFlags.contains(.shift))
+    }
+    @objc func showShortcuts() {
+        if shortcutsPopover?.isShown == true { shortcutsPopover?.close(); return }
+        guard panel.isVisible else { return }
+        var reference: [(String, String)] = [
+            (settings.hotkeyLabel, "Open picker; press again for a new dated session"),
+            ("↑ / ↓", "Select session in search or list"),
+            ("Page Up / Down", "Move ten sessions"),
+            ("Home / End", "First / last session"),
+            ("↵", "Open selected session"),
+            ("⇧↵", "Start clean in the selected folder"),
+            ("⌃⇥", "Switch Recent / Folders"),
+            ("⇥ / ⇧⇥", "Move keyboard focus"),
+            ("⌘← / ⌘→", "Change date range"),
+            ("⌘N", "New dated session · " + settings.newProvider.title)
+        ]
+        if settings.enabledProviders.count > 1 {
+            reference += [("⌘1 / ⌘2 / ⌘3", "All / Claude / Codex filter"), ("⌘⇧N", "Choose provider for new sessions")]
+        }
+        reference += [("⌘R", "Refresh sessions"), ("Esc", "Close picker or cancel dialog"),
+                      ("⌘,", "Settings"), ("⌘/", "Show / hide shortcuts"), ("⌘Q", "Quit CCS")]
+        let title = NSTextField(labelWithString: "Keyboard shortcuts")
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        let cells = reference.map { key, action -> [NSView] in
+            let keyLabel = NSTextField(labelWithString: key), label = NSTextField(labelWithString: action)
+            keyLabel.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
+            label.font = .systemFont(ofSize: 11); label.textColor = .secondaryLabelColor
+            return [keyLabel, label]
+        }
+        let grid = NSGridView(views: cells); grid.columnSpacing = 14; grid.rowSpacing = 7
+        grid.column(at: 0).xPlacement = .trailing
+        let stack = NSStackView(views: [title, grid]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 12
+        let controller = NSViewController(); controller.view = NSView()
+        stack.translatesAutoresizingMaskIntoConstraints = false; controller.view.addSubview(stack)
+        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: controller.view.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: controller.view.trailingAnchor, constant: -16),
+            stack.topAnchor.constraint(equalTo: controller.view.topAnchor, constant: 14),
+            stack.bottomAnchor.constraint(equalTo: controller.view.bottomAnchor, constant: -14)])
+        controller.view.setFrameSize(NSSize(width: stack.fittingSize.width + 32, height: stack.fittingSize.height + 28))
+        let popover = NSPopover(); popover.contentViewController = controller
+        popover.behavior = .transient; popover.animates = false; shortcutsPopover = popover
+        popover.show(relativeTo: shortcuts.bounds, of: shortcuts, preferredEdge: .maxY)
     }
     @objc func settingsClicked() { onSettings?() }
     func activateSelected(fresh: Bool) {

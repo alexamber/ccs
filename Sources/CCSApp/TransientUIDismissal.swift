@@ -16,7 +16,7 @@ final class TransientUIDismissal {
             // AppKit's menu windows handle their own tracking and item selection.
             if let window = event.window, window.level < .popUpMenu {
                 if self.menuIsOpen { self.menu?.cancelTracking() }
-                if window !== self.popup?.panel { self.popup?.hide(restoreFocus: false) }
+                if let popup = self.popup, !popup.owns(window) { popup.hide(restoreFocus: false) }
             }
             return event
         }
