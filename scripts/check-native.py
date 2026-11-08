@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import pty
+import plistlib
 import select
 import struct
 import subprocess
@@ -49,7 +50,20 @@ with tempfile.TemporaryDirectory(prefix="ccs-native-check-") as temp:
     run("--activate", "missing", code=1)
     run("--activate=missing", code=1)
     run("--json", "--days=0")
-    print("CLI metadata, list, error statuses, and legacy flags: passed", flush=True)
+    run("--install-cli")
+    link = home / ".local/bin/ccs"
+    assert link.is_symlink() and link.resolve() == binary
+    run("--install-cli")
+    assert len(list(link.parent.iterdir())) == 1, "Repeated installation created a backup"
+    info_path = binary.parent.parent / "Info.plist"
+    version = plistlib.loads(info_path.read_bytes())["CFBundleShortVersionString"]
+    assert run("--version").strip() == "ccs " + version
+    # A login shell invokes the command with argv[0] == "ccs", not its full path.
+    installed_env = {**env, "PATH": str(link.parent) + ":" + env["PATH"]}
+    via_path = subprocess.run(["ccs", "--version"], env=installed_env, capture_output=True, text=True, timeout=20)
+    assert via_path.returncode == 0 and via_path.stdout.strip() == "ccs " + version, via_path
+    run("--install-cli", "--json", code=2)
+    print("CLI metadata, list, error statuses, installation, version, and flags: passed", flush=True)
 
     unused, in_use = home / "2026-11-08-1", home / "2026-11-08-2"
     unused.mkdir(); in_use.mkdir()

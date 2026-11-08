@@ -4,7 +4,7 @@ class Ccs < Formula
   license "MIT"
   head "https://github.com/alexamber/ccs.git", branch: "main"
 
-  depends_on :macos
+  depends_on macos: :sonoma
   depends_on xcode: ["15.0", :build]
 
   def install

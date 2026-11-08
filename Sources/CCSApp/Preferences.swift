@@ -71,7 +71,7 @@ final class Preferences: NSObject {
         cliIcon.widthAnchor.constraint(equalToConstant: 18).isActive = true; cliIcon.heightAnchor.constraint(equalToConstant: 18).isActive = true
         let cliLeading = NSStackView(views: [cliIcon, cliText]); cliLeading.spacing = 9
         cliAction.controlSize = .small; cliAction.bezelStyle = .rounded; cliAction.target = self; cliAction.action = #selector(cliClicked)
-        let terminal = section("Terminal", rows: [row(cliLeading, cliAction, minimumHeight: 32)])
+        let terminal = section("Command-line tool", rows: [row(cliLeading, cliAction, minimumHeight: 32)])
         let version = label("CCS " + Product.version); version.font = .systemFont(ofSize: 10); version.textColor = .tertiaryLabelColor
         let help = NSButton(title: "Help", target: self, action: #selector(openHelp)); help.isBordered = false; help.font = .systemFont(ofSize: 11); help.contentTintColor = .linkColor
         let footer = row(version, help, minimumHeight: 16)
@@ -125,23 +125,21 @@ final class Preferences: NSObject {
         if override != nil { folderHint.toolTip = choose.toolTip }
     }
     func refreshInstallation() {
-        let fm = FileManager.default, source = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/ccs").resolvingSymlinksInPath()
-        let search = (environment["PATH"] ?? "").split(separator: ":").map(String.init)
-        let candidates = search + [CCSPaths.home + "/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"]
-        installedCLI = candidates.map { URL(fileURLWithPath: $0).appendingPathComponent("ccs") }.first {
-            fm.isExecutableFile(atPath: $0.path) && $0.resolvingSymlinksInPath().path == source.path
-        }
-        commandOnPath = installedCLI.map { search.contains($0.deletingLastPathComponent().path) } ?? false
+        let installation = CLIInstaller.status(source: AppInstallation.cli, environment: environment)
+        installedCLI = installation.location; commandOnPath = installation.isOnPath
         cliIcon.image = NSImage(systemSymbolName: installedCLI == nil ? "terminal" : "checkmark.circle.fill", accessibilityDescription: installedCLI == nil ? "Not installed" : "Installed")
         cliIcon.contentTintColor = installedCLI == nil ? .secondaryLabelColor : .systemGreen
-        cliTitle.stringValue = installedCLI == nil ? "Use CCS from Terminal" : "ccs is installed"
-        cliDetail.stringValue = installedCLI == nil ? "Adds the terminal picker and scripting commands" : commandOnPath ? "Ready to use in Terminal" : shortPath(installedCLI!.path)
-        cliAction.title = installedCLI == nil ? "Install…" : commandOnPath ? "Copy command" : "Copy path"
-        cliAction.toolTip = installedCLI?.path
+        cliTitle.stringValue = installedCLI == nil ? "Add the ccs command" : commandOnPath ? "ccs · Installed" : "ccs · Shell setup needed"
+        cliDetail.stringValue = installedCLI == nil ? "Browse sessions by typing ccs in Terminal" : commandOnPath ? "Type ccs in Terminal to browse sessions" : "One step to enable ccs in Terminal"
+        cliAction.title = installedCLI == nil ? "Install…" : commandOnPath ? "Copy ccs" : "Set up…"
+        cliAction.toolTip = installedCLI == nil ? "Link the bundled command into ~/.local/bin" : commandOnPath ? "Copy ccs to the clipboard" : "Show how to enable the command in your shell"
     }
     @objc private func cliClicked() {
         if let installedCLI {
-            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(commandOnPath ? "ccs" : installedCLI.path, forType: .string)
+            guard commandOnPath else { showCLISetup(installedCLI); return }
+            NSPasteboard.general.clearContents(); NSPasteboard.general.setString("ccs", forType: .string)
+            cliAction.title = "Copied"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.refreshInstallation() }
         } else { installCLI() }
     }
     @objc private func changed() {
@@ -173,16 +171,24 @@ final class Preferences: NSObject {
     }
     @objc func installCLI() {
         do {
-            _ = try CLIInstaller.install(source: Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/ccs"))
+            _ = try CLIInstaller.install(source: AppInstallation.cli)
             refreshInstallation()
-            if !commandOnPath { explain("The command is installed. To run it as ccs, add this line to ~/.zshrc and open a new Terminal window:\n\nexport PATH=\"$HOME/.local/bin:$PATH\"\n\nYou can also use Copy path to run it directly.", from: cliAction) }
+            if !commandOnPath, let installedCLI { showCLISetup(installedCLI) }
         } catch { showError(error, window: window) }
+    }
+    private func showCLISetup(_ command: URL) {
+        let directory = shellQuote(command.deletingLastPathComponent().path)
+        let shell = URL(fileURLWithPath: environment["SHELL"] ?? "/bin/zsh").lastPathComponent
+        let file = shell == "bash" ? "~/.bash_profile" : shell == "fish" ? "~/.config/fish/config.fish" : "~/.zshrc"
+        let line = shell == "fish" ? "fish_add_path \(directory)" : "export PATH=\(directory):\"$PATH\""
+        explain("Your shell is not using this copy of ccs yet. Add this line to \(file), then open a new Terminal window:\n\n\(line)\n\nType ccs to browse sessions, or ccs --gui to open the popup. You can select and copy the setup line above.", from: cliAction)
     }
     @objc private func cleanupHelp(_ sender: NSButton) {
         explain("Removes empty dated folders after Claude exits, and checks abandoned folders after five minutes. Folders with files, saved sessions, or a process using them are kept. If CCS cannot verify that a folder is unused, it keeps it.", from: sender)
     }
     private func explain(_ text: String, from view: NSView) {
         let label = NSTextField(wrappingLabelWithString: text); label.font = .systemFont(ofSize: 12); label.preferredMaxLayoutWidth = 280
+        label.isSelectable = true
         label.translatesAutoresizingMaskIntoConstraints = false
         let controller = NSViewController(); controller.view = NSView(frame: NSRect(x: 0, y: 0, width: 308, height: 150)); controller.view.addSubview(label)
         NSLayoutConstraint.activate([label.leadingAnchor.constraint(equalTo: controller.view.leadingAnchor, constant: 14), label.trailingAnchor.constraint(equalTo: controller.view.trailingAnchor, constant: -14), label.topAnchor.constraint(equalTo: controller.view.topAnchor, constant: 12), label.bottomAnchor.constraint(equalTo: controller.view.bottomAnchor, constant: -12), label.widthAnchor.constraint(equalToConstant: 280)])

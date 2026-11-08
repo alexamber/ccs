@@ -40,14 +40,3 @@ public struct Settings: Codable {
         return URL(fileURLWithPath: CCSPaths.expand(override ?? newDirectory)).standardizedFileURL
     }
 }
-
-public enum Product {
-    public static let version = "0.2.0"
-    public static let website = URL(string: "https://github.com/alexamber/ccs")!
-    // Set only to a real, owner-supplied public tip URL. No placeholder donation destination.
-    public static var donationURL: URL? {
-        guard let value = Bundle.main.object(forInfoDictionaryKey: "CCSDonationURL") as? String,
-              let url = URL(string: value), url.scheme == "https", url.host != nil else { return nil }
-        return url
-    }
-}

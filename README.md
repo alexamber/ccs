@@ -54,7 +54,8 @@ keys to select, and press Enter to focus, attach, or resume a session.
 | Cmd-comma | Settings |
 
 The popup opens on the screen containing the pointer, follows system appearance,
-and refreshes every five seconds while visible. CCS stays in the menu bar;
+and refreshes every five seconds while visible. Click outside or press Escape to
+dismiss the picker or menu. CCS stays in the menu bar;
 launch at login is optional and off by default. Quit CCS to release its shortcut.
 If Hammerspoon still has the old CCS shortcut, remove its `require("ccs").start()`
 line and reload Hammerspoon, or choose another shortcut in CCS Settings.
@@ -139,9 +140,9 @@ The source formula requires Xcode. The release cask installs both the app and CL
 from the signed universal DMG without a compiler dependency. Its checksum is
 generated from the notarized artifact.
 
-See [release and signing instructions](docs/releasing.md). App Store distribution
-is deferred; [the sandbox feasibility results](docs/app-store-feasibility.md)
-explain the differences. Codex session support is outside this first native
+See [release and signing instructions](docs/releasing.md) and the
+[architecture guide](docs/architecture.md). CCS uses direct distribution to retain
+Terminal integration and process-aware cleanup. Codex session support is outside this first native
 release. There is an optional HTTPS tip-link slot in the build; no payment page
 or paid features are configured.
 
@@ -153,11 +154,9 @@ bash scripts/build-app.sh --development
 python3 scripts/check-native.py build/CCS.app/Contents/MacOS/ccs
 ```
 
-The developer-only smoke script checks the packaged CLI and a real terminal; it
-is not shipped as an app dependency. The original Python executable (`./ccs`),
-installer (`install.sh`), Hammerspoon module, and their tests remain in this
-checkout as the legacy implementation and compatibility reference. They are not
-included in the native app. Their checks are `python3 -m unittest discover -s
-tests -v` and `node --test tests/test_hotkey.mjs`.
+The developer-only smoke script checks the packaged CLI, installation, cleanup
+with a real process, and terminal interaction. Python is used only for this test
+harness. The retired Python/Hammerspoon implementation and sandbox experiment
+are available in Git history.
 
 [MIT license](LICENSE).

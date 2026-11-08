@@ -1,6 +1,24 @@
 import Foundation
 
+public struct CLIInstallationStatus {
+    public let location: URL?
+    public let isOnPath: Bool
+}
+
 public enum CLIInstaller {
+    public static func status(source: URL, environment: [String: String], home: String = CCSPaths.home) -> CLIInstallationStatus {
+        let fm = FileManager.default, resolved = source.resolvingSymlinksInPath().path
+        let search = (environment["PATH"] ?? "").split(separator: ":", omittingEmptySubsequences: false).map {
+            URL(fileURLWithPath: $0.isEmpty ? fm.currentDirectoryPath : String($0))
+        }
+        let pathCommands = search.map { $0.appendingPathComponent("ccs") }.filter { fm.isExecutableFile(atPath: $0.path) }
+        let candidates = pathCommands + [URL(fileURLWithPath: home).appendingPathComponent(".local/bin/ccs"),
+                                        URL(fileURLWithPath: "/opt/homebrew/bin/ccs"), URL(fileURLWithPath: "/usr/local/bin/ccs")]
+        let location = candidates.first { fm.isExecutableFile(atPath: $0.path) && $0.resolvingSymlinksInPath().path == resolved }
+        // An earlier, different ccs on PATH shadows this app's command.
+        let isOnPath = pathCommands.first?.resolvingSymlinksInPath().path == resolved
+        return CLIInstallationStatus(location: location, isOnPath: isOnPath)
+    }
     @discardableResult public static func install(source: URL, directory: URL? = nil) throws -> URL {
         let fm = FileManager.default
         guard fm.isExecutableFile(atPath: source.path) else { throw CCSError.message("The bundled ccs command is missing. Reinstall CCS.app.") }

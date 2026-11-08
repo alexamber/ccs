@@ -67,8 +67,8 @@ Stripe SDK are included in the app.
 3. Inspect the signed artifacts and generated `Casks/ccs.rb`.
 4. Publish only after owner approval: create the matching `v0.2.0` GitHub release,
    upload the release DMG, ZIP and checksums, then publish the generated cask in
-   the tap. Update the version consistently in `Product.version`, `Info.plist`,
-   the Git tag, and release notes for later releases.
+   the tap. Set the version in `macOS/Info.plist`; both app and bundled CLI read
+   it there. Match the Git tag and release notes to that version.
 
 The source formula and cask conflict on the `ccs` command. Users switching from
 the old formula should uninstall it before installing the cask. A standalone

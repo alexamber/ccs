@@ -32,16 +32,16 @@ if [ "$app_only" != --app-only ]; then
         lipo "$app/Contents/MacOS/ccs" -verify_arch "$arch"
     done
 fi
-cp macOS/App/Info.plist "$app/Contents/Info.plist"
+cp macOS/Info.plist "$app/Contents/Info.plist"
 cp LICENSE "$app/Contents/Resources/LICENSE"
 if [ -n "${CCS_DONATION_URL:-}" ]; then
     case "$CCS_DONATION_URL" in https://*) ;; *) printf 'CCS_DONATION_URL must use HTTPS.\n' >&2; exit 2 ;; esac
     /usr/bin/plutil -insert CCSDonationURL -string "$CCS_DONATION_URL" "$app/Contents/Info.plist"
 fi
-xcrun swiftc -module-cache-path "$PWD/.build/module-cache" macOS/App/Icon.swift -o build/ccs-icon-generator
+xcrun swiftc -module-cache-path "$PWD/.build/module-cache" macOS/Icon.swift -o build/ccs-icon-generator
 build/ccs-icon-generator build/CCS.iconset
 iconutil -c icns build/CCS.iconset -o "$app/Contents/Resources/CCS.icns"
-sign=(--force --sign "$identity" --options runtime --entitlements macOS/App/CCS.entitlements)
+sign=(--force --sign "$identity" --options runtime --entitlements macOS/CCS.entitlements)
 if [ "$identity" != - ]; then sign+=(--timestamp); fi
 codesign "${sign[@]}" "$app/Contents/MacOS/ccs"
 codesign "${sign[@]}" "$app"
@@ -58,6 +58,7 @@ else
 fi
 if [ "$app_only" = --app-only ]; then printf 'Built app: %s\n' "$app"; exit 0; fi
 stage=$(mktemp -d "$PWD/build/dmg-stage.XXXXXX")
+trap 'rm -rf "$stage"' EXIT
 ditto "$app" "$stage/CCS.app"
 ln -s /Applications "$stage/Applications"
 cat > "$stage/Read Me.txt" <<'TEXT'

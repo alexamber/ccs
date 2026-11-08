@@ -144,6 +144,23 @@ final class SessionTests: XCTestCase {
         _ = try CLIInstaller.install(source: source, directory: directory)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path).count, 2)
     }
+    func testCLIStatusRecognizesShadowedAndOffPathInstallations() throws {
+        let root = try temporary(), source = root.appendingPathComponent("source")
+        let bin = root.appendingPathComponent(".local/bin"), older = root.appendingPathComponent("older")
+        try Data("native".utf8).write(to: source)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: source.path)
+        let installed = try CLIInstaller.install(source: source, directory: bin)
+        try FileManager.default.createDirectory(at: older, withIntermediateDirectories: true)
+        let other = older.appendingPathComponent("ccs")
+        try Data("old".utf8).write(to: other)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: other.path)
+        let ready = CLIInstaller.status(source: source, environment: ["PATH": bin.path], home: root.path)
+        XCTAssertEqual(ready.location, installed); XCTAssertTrue(ready.isOnPath)
+        let shadowed = CLIInstaller.status(source: source, environment: ["PATH": older.path + ":" + bin.path], home: root.path)
+        XCTAssertEqual(shadowed.location, installed); XCTAssertFalse(shadowed.isOnPath)
+        let offPath = CLIInstaller.status(source: source, environment: ["PATH": older.path], home: root.path)
+        XCTAssertEqual(offPath.location, installed); XCTAssertFalse(offPath.isOnPath)
+    }
     func testCleanupRecognizesPhysicalAndSymlinkedWorkingDirectories() throws {
         let root = try temporary(), actual = root.appendingPathComponent("actual")
         try FileManager.default.createDirectory(at: actual, withIntermediateDirectories: true)

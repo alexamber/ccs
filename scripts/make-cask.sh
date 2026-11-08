@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' macOS/App/Info.plist)
+version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' macOS/Info.plist)
 artifact="dist/CCS-$version-macos-universal.dmg"
 if [ ! -f "$artifact" ]; then printf 'Build a signed, notarized release first: bash scripts/build-app.sh --release\n' >&2; exit 1; fi
 xcrun stapler validate "$artifact"

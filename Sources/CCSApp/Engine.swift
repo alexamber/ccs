@@ -4,14 +4,9 @@ import Foundation
 
 final class Engine {
     private let queue = DispatchQueue(label: "io.github.alexamber.ccs.engine", qos: .userInitiated)
-    private var service: SessionService!
-    private var environment = [String: String]()
-    init() {
-        queue.async {
-            self.environment = ProcessRunner.loginEnvironment()
-            self.service = SessionService(runner: ProcessRunner(environment: self.environment).command)
-        }
-    }
+    // Both lazy values are accessed only on the serial engine queue.
+    private lazy var environment = ProcessRunner.loginEnvironment()
+    private lazy var service = SessionService(runner: ProcessRunner(environment: environment).command)
     func perform<T>(_ work: @escaping (SessionService, [String: String]) throws -> T,
                     completion: @escaping (Result<T, Error>) -> Void) {
         queue.async {

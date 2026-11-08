@@ -5,10 +5,8 @@ let package = Package(
     name: "CCS",
     platforms: [.macOS(.v14)],
     products: [
-        .library(name: "CCSCore", targets: ["CCSCore"]),
         .executable(name: "ccs", targets: ["CCSCLI"]),
         .executable(name: "CCSApp", targets: ["CCSApp"]),
-        .executable(name: "ccs-store-probe", targets: ["CCSStoreProbe"]),
     ],
     targets: [
         .target(name: "CCSCore"),
@@ -16,9 +14,6 @@ let package = Package(
         .executableTarget(name: "CCSCLI", dependencies: ["CCSCore", "CTerminal"]),
         .executableTarget(name: "CCSApp", dependencies: ["CCSCore"],
                           linkerSettings: [.linkedFramework("Carbon")]),
-        .executableTarget(name: "CCSStoreProbe", path: "macOS",
-                          exclude: ["StoreProbe.entitlements", "App"], sources: ["StoreProbe.swift"],
-                          linkerSettings: [.linkedFramework("Carbon")]),
-        .testTarget(name: "CCSCoreTests", dependencies: ["CCSCore"], path: "tests/CCSCoreTests"),
+        .testTarget(name: "CCSCoreTests", dependencies: ["CCSCore"]),
     ]
 )
