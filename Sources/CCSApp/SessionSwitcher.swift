@@ -1,8 +1,8 @@
 import AppKit
 import CCSCore
 
-/// Cached rows respond to keys as a preview. Resolve the current tab before
-/// committing, then freeze the list for the remainder of this gesture.
+/// Establish the current tab before showing a selection. The first highlight
+/// includes the opening key press; later refreshes never change this gesture.
 final class SessionSwitcher: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
     let panel = PickerPanel(contentRect: NSRect(x: 0, y: 0, width: 400, height: 130), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     private let table = NSTableView(), scroll = NSScrollView()
@@ -59,14 +59,13 @@ final class SessionSwitcher: NSObject, NSWindowDelegate, NSTableViewDataSource, 
     }
     deinit { timer?.invalidate(); if let monitor { NSEvent.removeMonitor(monitor) } }
     @discardableResult
-    func show(targets: [TerminalSwitchTarget], step: Int,
+    func show(targets: [TerminalSwitchTarget] = [], step: Int,
               optionHeld: @escaping () -> Bool = { NSEvent.modifierFlags.contains(.option) }) -> Int {
         presentation += 1; ready = false
         self.targets = targets; steps = step; held = optionHeld
         previousApplication = NSWorkspace.shared.frontmostApplication
         message.stringValue = "Finding active Terminal sessions…"; message.isHidden = !targets.isEmpty
         table.reloadData(); table.deselectAll(nil)
-        if !targets.isEmpty { select(step >= 0 ? step - 1 : step) }
         resize()
         NSApp.activate(ignoringOtherApps: true); panel.makeKeyAndOrderFront(nil); panel.makeFirstResponder(table)
         timer?.invalidate()
@@ -92,7 +91,7 @@ final class SessionSwitcher: NSObject, NSWindowDelegate, NSTableViewDataSource, 
         targets = []; table.reloadData(); message.isHidden = false; message.stringValue = text; resize()
     }
     func cycle(_ delta: Int) {
-        if !ready { steps += delta }
+        if !ready { steps += delta; return }
         guard !targets.isEmpty else { return }
         select(max(0, table.selectedRow) + delta)
     }

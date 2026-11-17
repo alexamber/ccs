@@ -112,10 +112,11 @@ tabs. Popups never rename tabs or open a session.
 providers. Recognized Codex clients without a confirmed conversation appear as
 **Codex tab**, with their terminal identifier and “Conversation unconfirmed.”
 These rows focus the existing client without renaming it or guessing its files.
-The switcher appears immediately; cached rows respond to Tab while the current
-Terminal tabs are checked on a dedicated queue. Focus waits for that check, and the
-list stays fixed for the gesture. Session labels refresh separately, so newly
-started conversations may appear on the next opening. Hold Option and tap Tab to
+The switcher reuses its recent list and reads only the current Terminal tab before
+showing the first selection. That highlight already includes the opening Tab press;
+refreshes never move it or reorder rows during a gesture. The chosen tab is validated
+before focus. Session labels refresh separately, so newly started conversations may
+appear on the next opening. A cold start still needs the initial tab enumeration. Hold Option and tap Tab to
 cycle, add Shift to move backward, and release Option to focus the highlighted tab.
 Escape cancels. Each confirmed conversation appears once, even if multiple tabs share its
 session ID; different conversations in the same folder remain separate. Unconfirmed

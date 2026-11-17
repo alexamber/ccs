@@ -18,8 +18,11 @@ final class Engine {
     }
     private let foreground = Lane("actions", qos: .userInitiated)
     private let background = Lane("history", qos: .utility)
+    private let switchOrigin = Lane("switch-origin", qos: .userInitiated)
     private let switching = Lane("switching", qos: .userInitiated)
     // Main-thread snapshots; provider connections remain confined to their lane.
+    private var originGeneration = 0
+    private var originRequest: DispatchWorkItem?
     private var switchGeneration = 0
     private var switchRequest: DispatchWorkItem?
     private var switchSessions = [Session]()
@@ -48,6 +51,16 @@ final class Engine {
         }) { result in
             let callbacks = self.historyCompletions; self.historyCompletions = []
             callbacks.forEach { $0(result) }
+        }
+    }
+
+    func loadSwitchOrigin(completion: @escaping (Result<String?, Error>) -> Void) {
+        originGeneration += 1
+        let generation = originGeneration
+        originRequest?.cancel()
+        originRequest = perform(on: switchOrigin, { service, _ in try service.selectedTerminalTTY() }) { result in
+            guard generation == self.originGeneration else { return }
+            self.originRequest = nil; completion(result)
         }
     }
 

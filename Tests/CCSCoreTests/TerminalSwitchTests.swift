@@ -140,6 +140,7 @@ final class TerminalSwitchTests: XCTestCase {
         let matched = try service.terminalSwitchContext(sessions: [session])
         XCTAssertEqual(matched.targets.count, 1)
         XCTAssertEqual(matched.currentKey, session.key)
+        XCTAssertEqual(matched.keysByTTY, ["/dev/ttys001": session.key, "/dev/ttys002": session.key], "Either viewer must identify the same origin in a cached chooser")
         XCTAssertEqual(matched.targets.first?.session?.key, session.key)
         var duplicate = session; duplicate.id = "other"
         let ambiguous = try service.terminalSwitchContext(sessions: [session, duplicate])
@@ -166,10 +167,28 @@ final class TerminalSwitchTests: XCTestCase {
         XCTAssertNil(try service.terminalSwitchContext(sessions: [session], codexSocketPath: "/tmp/other").targets.first?.session)
     }
 
+    func testOriginLookupReadsOnlySelectedTTYAndPropagatesAutomationFailure() throws {
+        var code: Int32 = 0, output = "/dev/ttys001\n"
+        let service = SessionService(runner: { path, args, script, timeout in
+            XCTAssertEqual(path, "/usr/bin/osascript")
+            XCTAssertEqual(args, ["-"]); XCTAssertEqual(script, SessionService.selectedTTYScript)
+            XCTAssertEqual(timeout, 2)
+            return CommandResult(code: code, out: output)
+        })
+        XCTAssertEqual(try service.selectedTerminalTTY(), "/dev/ttys001")
+        output = ""; XCTAssertNil(try service.selectedTerminalTTY())
+        output = "unexpected"; XCTAssertThrowsError(try service.selectedTerminalTTY())
+        output = "/dev/ttys001\n/dev/ttys002"; XCTAssertThrowsError(try service.selectedTerminalTTY())
+        output = "/dev/ttys001"; code = 1
+        XCTAssertThrowsError(try service.selectedTerminalTTY())
+    }
+
     func testSwitchAppleScriptCompiles() throws {
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".scpt")
         defer { try? FileManager.default.removeItem(at: path) }
-        let result = try ProcessRunner().run("/usr/bin/osacompile", ["-o", path.path, "-"], input: SessionService.switchTabsScript)
-        XCTAssertEqual(result.code, 0, result.err)
+        for script in [SessionService.switchTabsScript, SessionService.selectedTTYScript] {
+            let result = try ProcessRunner().run("/usr/bin/osacompile", ["-o", path.path, "-"], input: script)
+            XCTAssertEqual(result.code, 0, result.err)
+        }
     }
 }

@@ -18,10 +18,35 @@ public struct TerminalSwitchTarget {
 public struct TerminalSwitchContext {
     public let targets: [TerminalSwitchTarget]
     public let currentKey: String?
-    public init(targets: [TerminalSwitchTarget], currentKey: String?) { self.targets = targets; self.currentKey = currentKey }
+    public let keysByTTY: [String: String]
+    public init(targets: [TerminalSwitchTarget], currentKey: String?, keysByTTY: [String: String]? = nil) {
+        self.targets = targets; self.currentKey = currentKey
+        self.keysByTTY = keysByTTY ?? Dictionary(targets.map { ($0.tab.tty, $0.key) }, uniquingKeysWith: { first, _ in first })
+    }
 }
 
 extension SessionService {
+    /// Read only the origin for a cached chooser. The chosen target is still
+    /// fully validated by focusTerminalTarget before any focus action.
+    public func selectedTerminalTTY() throws -> String? {
+        let result = try runner("/usr/bin/osascript", ["-"], Self.selectedTTYScript, 2)
+        guard result.code == 0 else { throw CCSError.message("Couldn’t read the current Terminal tab.") }
+        let tty = result.out.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tty.isEmpty else { return nil }
+        guard tty.hasPrefix("/dev/tty"), !tty.contains(where: \.isWhitespace) else {
+            throw CCSError.message("Terminal returned an invalid tab identifier.")
+        }
+        return tty
+    }
+
+    public static let selectedTTYScript = """
+    if application "Terminal" is not running then return ""
+    tell application "Terminal"
+      if (count of windows) is 0 then return ""
+      return tty of selected tab of front window
+    end tell
+    """
+
     public func terminalSwitchContext(sessions: [Session], includeUnconfirmedCodex: Bool = true, codexSocketPath: String? = nil) throws -> TerminalSwitchContext {
         try terminalSwitchContext(sessions: sessions, includeUnconfirmedCodex: includeUnconfirmedCodex, onlyTTY: nil, codexSocketPath: codexSocketPath)
     }
@@ -38,7 +63,7 @@ extension SessionService {
         let processes = try runner("/bin/ps", ["-axo", "pid=,ppid=,tty=,command="], nil, 5)
         guard processes.code == 0 else { throw CCSError.message("Couldn’t inspect running Terminal sessions.") }
         var targets = [TerminalSwitchTarget](), seen = Set<String>()
-        var currentKey: String?
+        var currentKey: String?, keysByTTY = [String: String]()
         for record in parts.dropFirst() {
             let fields = record.components(separatedBy: "\u{1f}")
             guard fields.count == 6, let tab = TerminalTabSnapshot(output: fields.joined(separator: "\n")),
@@ -47,10 +72,11 @@ extension SessionService {
             let process = CodexProvider.terminalProcess(tty: String(tab.tty.dropFirst(5)), processList: processes.out, arguments: processArguments)
             guard session != nil || (includeUnconfirmedCodex && process != nil) else { continue }
             let target = TerminalSwitchTarget(session: session, tab: tab, processID: process?.pid)
+            keysByTTY[tab.tty] = target.key
             if tab.tty == currentTTY { currentKey = target.key }
             if seen.insert(target.key).inserted { targets.append(target) }
         }
-        return TerminalSwitchContext(targets: targets, currentKey: currentKey)
+        return TerminalSwitchContext(targets: targets, currentKey: currentKey, keysByTTY: keysByTTY)
     }
 
     /// Switching only focuses an existing, freshly matched tab. It never resumes

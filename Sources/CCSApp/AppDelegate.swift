@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let nextSessionKey = HotKey(id: 2), previousSessionKey = HotKey(id: 3)
     private let sessionSwitcher = SessionSwitcher()
     private var switchUpdated = Date.distantPast
+    private var switchKeysByTTY = [String: String]()
     private var switchTargets = [TerminalSwitchTarget](), switchHistory = [String]()
     var settings = Settings.load()
     var popup: Popup!, preferences: Preferences!, status: NSStatusItem!
@@ -148,19 +149,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if sessionSwitcher.panel.isVisible { sessionSwitcher.cycle(step); return }
         let sourceWasTerminal = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Terminal"
         let cached = Date().timeIntervalSince(switchUpdated) < 30 ? orderedTargets(switchTargets) : []
+        let keysByTTY = switchKeysByTTY
         popup.hide(restoreFocus: false); terminalPopup.hide()
         let presentation = sessionSwitcher.show(targets: cached, step: step)
+        if !cached.isEmpty {
+            if sourceWasTerminal {
+                engine.loadSwitchOrigin { [weak self] result in
+                    guard let self, self.sessionSwitcher.presentation == presentation else { return }
+                    do {
+                        let tty = try result.get()
+                        let current = tty.flatMap { keysByTTY[$0] }
+                        self.sessionSwitcher.supply(cached, currentKey: current, presentation: presentation)
+                    } catch { self.sessionSwitcher.showFailure("Couldn’t read the current tab. Press Esc and try again.", presentation: presentation) }
+                }
+            } else {
+                sessionSwitcher.supply(cached, currentKey: nil, presentation: presentation)
+            }
+        }
         let enabled = settings.enabledProviders
         engine.loadSwitchContext(enabledProviders: enabled) { [weak self] result in
-            guard let self, self.sessionSwitcher.presentation == presentation else { return }
+            guard let self, self.settings.enabledProviders == enabled else { return }
+            let sameGesture = self.sessionSwitcher.presentation == presentation
             do {
                 let context = try result.get()
                 let current = sourceWasTerminal ? context.currentKey : nil
-                if let current { self.rememberSwitch(current) }
+                if sameGesture, let current { self.rememberSwitch(current) }
                 self.switchTargets = self.orderedTargets(context.targets)
+                self.switchKeysByTTY = context.keysByTTY
                 self.switchUpdated = Date()
-                self.sessionSwitcher.supply(self.switchTargets, currentKey: current, presentation: presentation)
-            } catch { self.sessionSwitcher.showFailure("Couldn’t refresh sessions. Press Esc and try again.", presentation: presentation) }
+                if sameGesture, cached.isEmpty {
+                    self.sessionSwitcher.supply(self.switchTargets, currentKey: current, presentation: presentation)
+                }
+            } catch {
+                if sameGesture, cached.isEmpty { self.sessionSwitcher.showFailure("Couldn’t refresh sessions. Press Esc and try again.", presentation: presentation) }
+            }
         }
     }
     func item(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
