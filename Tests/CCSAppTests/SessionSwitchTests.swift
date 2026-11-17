@@ -19,14 +19,14 @@ final class SessionSwitchTests: XCTestCase {
         _ = NSApplication.shared
         let popup = SessionSwitcher(), targets = targets()
         var held = true, committed = [String]()
-        popup.onCommit = { committed.append($0.session.id); XCTAssertEqual($1.count, 3) }
+        popup.onCommit = { committed.append($0.session!.id); XCTAssertEqual($1.count, 3) }
         let first = popup.show(targets: targets, step: 1, optionHeld: { held })
-        popup.supply(targets, currentKey: targets[0].session.key, presentation: first)
-        XCTAssertEqual(popup.selected?.session.id, "b")
-        popup.cycle(2); XCTAssertEqual(popup.selected?.session.id, "a")
-        popup.cycle(-1); XCTAssertEqual(popup.selected?.session.id, "c")
+        popup.supply(targets, currentKey: targets[0].key, presentation: first)
+        XCTAssertEqual(popup.selected?.session?.id, "b")
+        popup.cycle(2); XCTAssertEqual(popup.selected?.session?.id, "a")
+        popup.cycle(-1); XCTAssertEqual(popup.selected?.session?.id, "c")
         popup.supply(Array(targets.reversed()), currentKey: nil, presentation: first)
-        XCTAssertEqual(popup.selected?.session.id, "c", "A refresh must not change the choice mid-gesture")
+        XCTAssertEqual(popup.selected?.session?.id, "c", "A refresh must not change the choice mid-gesture")
         XCTAssertTrue(committed.isEmpty)
         if let directory = ProcessInfo.processInfo.environment["CCS_UI_ARTIFACT_DIR"] {
             try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
@@ -43,34 +43,48 @@ final class SessionSwitchTests: XCTestCase {
         XCTAssertEqual(committed, ["c"]); XCTAssertFalse(popup.panel.isVisible)
         let next = popup.show(targets: targets, step: 1, optionHeld: { true })
         popup.supply(targets, currentKey: nil, presentation: next)
-        XCTAssertEqual(popup.selected?.session.id, "a")
+        XCTAssertEqual(popup.selected?.session?.id, "a")
         popup.hide()
         XCTAssertEqual(committed, ["c"], "Dismissal cancels a pending switch")
+    }
+    func testGenericTabCanCommitWithoutInventingAConversation() {
+        _ = NSApplication.shared
+        let popup = SessionSwitcher()
+        let target = TerminalSwitchTarget(session: nil, tab: targets()[0].tab, processID: 123)
+        var committed = false
+        popup.onCommit = { selected, sessions in
+            XCTAssertEqual(selected.key, target.key)
+            XCTAssertNil(selected.session); XCTAssertTrue(sessions.isEmpty)
+            committed = true
+        }
+        let presentation = popup.show(targets: [], step: 1, optionHeld: { false })
+        popup.supply([target], currentKey: nil, presentation: presentation)
+        settle(); XCTAssertTrue(committed)
     }
     func testCachedPreviewWaitsForCurrentTabAndRejectsAnEarlierGesture() {
         _ = NSApplication.shared
         let popup = SessionSwitcher(), targets = targets()
         var committed = [String]()
-        popup.onCommit = { target, _ in committed.append(target.session.id) }
+        popup.onCommit = { target, _ in committed.append(target.session!.id) }
         let old = popup.show(targets: targets, step: 1, optionHeld: { false })
         settle()
         XCTAssertNil(popup.selected); XCTAssertTrue(committed.isEmpty)
         popup.hide()
         let current = popup.show(targets: targets, step: 1, optionHeld: { false })
-        popup.supply(targets, currentKey: targets[0].session.key, presentation: old)
+        popup.supply(targets, currentKey: targets[0].key, presentation: old)
         settle(); XCTAssertTrue(committed.isEmpty)
-        popup.supply(targets, currentKey: targets[1].session.key, presentation: current)
+        popup.supply(targets, currentKey: targets[1].key, presentation: current)
         settle(); XCTAssertEqual(committed, ["c"])
     }
     func testShowsBeforeLoadingAndKeepsStepsUntilResultsArrive() {
         _ = NSApplication.shared
         let popup = SessionSwitcher(), targets = targets()
         var committed = [String]()
-        popup.onCommit = { target, _ in committed.append(target.session.id) }
+        popup.onCommit = { target, _ in committed.append(target.session!.id) }
         let request = popup.show(targets: [], step: 1, optionHeld: { false })
         XCTAssertTrue(popup.panel.isVisible); XCTAssertNil(popup.selected)
-        popup.cycle(1); popup.supply(targets, currentKey: targets[0].session.key, presentation: request)
-        XCTAssertEqual(popup.selected?.session.id, "c")
+        popup.cycle(1); popup.supply(targets, currentKey: targets[0].key, presentation: request)
+        XCTAssertEqual(popup.selected?.session?.id, "c")
         settle(); XCTAssertEqual(committed, ["c"])
         let cancelled = popup.show(targets: [], step: 1, optionHeld: { false })
         popup.hide(); popup.supply(targets, currentKey: nil, presentation: cancelled); settle()

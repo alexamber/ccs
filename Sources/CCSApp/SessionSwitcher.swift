@@ -80,7 +80,7 @@ final class SessionSwitcher: NSObject, NSWindowDelegate, NSTableViewDataSource, 
         message.stringValue = "No active Terminal sessions found."; message.isHidden = !targets.isEmpty
         resize()
         guard !targets.isEmpty else { return }
-        let origin = currentKey.flatMap { key in targets.firstIndex { $0.session.key == key } }
+        let origin = currentKey.flatMap { key in targets.firstIndex { $0.key == key } }
         let index = origin ?? (steps >= 0 ? -1 : 0)
         select(index + steps)
     }
@@ -98,7 +98,7 @@ final class SessionSwitcher: NSObject, NSWindowDelegate, NSTableViewDataSource, 
     }
     @objc func commit() {
         guard panel.isVisible, let selected else { return }
-        let sessions = targets.map(\.session)
+        let sessions = targets.compactMap(\.session)
         hide(); onCommit?(selected, sessions)
     }
     func hide(restoreFocus: Bool = false) {
@@ -118,9 +118,9 @@ final class SessionSwitcher: NSObject, NSWindowDelegate, NSTableViewDataSource, 
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { ready }
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { PickerRow() }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let session = targets[row].session
-        let name = NSTextField(labelWithString: session.terminalTitle); name.font = .systemFont(ofSize: 13, weight: .medium)
-        let path = NSTextField(labelWithString: session.provider.title + " · " + shortPath(session.cwd)); path.font = .systemFont(ofSize: 11); path.textColor = .secondaryLabelColor
+        let target = targets[row]
+        let name = NSTextField(labelWithString: target.title); name.font = .systemFont(ofSize: 13, weight: .medium)
+        let path = NSTextField(labelWithString: target.subtitle); path.font = .systemFont(ofSize: 11); path.textColor = .secondaryLabelColor
         let cell = NSTableCellView()
         let text = NSStackView(views: [name, path]); text.orientation = .vertical; text.alignment = .leading; text.spacing = 2
         text.translatesAutoresizingMaskIntoConstraints = false; cell.addSubview(text)

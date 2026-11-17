@@ -109,27 +109,21 @@ public final class SessionService {
     private func activateCodex(_ s: Session, fresh: Bool) throws {
         if fresh { try openTerminal("cd \(shellQuote(s.cwd)) && \(codex.launchCommand)", title: s.folderTitle); return }
         let current = try codex.current(s.id)
-        if let processes = try? runner("/bin/ps", ["-axo", "pid=,ppid=,tty=,command="], nil, 5), processes.code == 0 {
-            let ttys = CodexProvider.candidateTTYs(id: current.id, processList: processes.out, localSocketPath: codex.sharedSocketPath, arguments: arguments)
-            if !ttys.isEmpty {
-                let focus = try runner("/usr/bin/osascript", ["-", current.terminalTitle] + ttys.map { "/dev/" + $0 }, Self.focusScript, 15)
-                if focus.code != 0 { throw CCSError.message(focus.err.nonempty ?? "Terminal automation failed.") }
-                if focus.out.trimmingCharacters(in: .whitespacesAndNewlines) == "ok" { return }
-            }
-        }
         if current.isLive {
-            // A plain `codex` has no resume ID in argv. Use the same conservative
-            // folder/title match as the switcher before creating another viewer.
             let sessions = codex.collect(days: 0)
             guard codex.historyAvailable else { throw CCSError.message("Couldn’t verify existing Codex tabs. Refresh and try again.") }
             let context = try terminalSwitchContext(sessions: sessions)
-            if let target = context.targets.first(where: { $0.session.key == current.key }) {
-                let focus = try runner("/usr/bin/osascript", ["-", current.terminalTitle, target.tab.tty], Self.focusScript, 5)
-                guard focus.code == 0, focus.out.trimmingCharacters(in: .whitespacesAndNewlines) == "ok" else {
-                    throw CCSError.message("Couldn’t focus that Terminal tab. Refresh and try again.")
-                }
-                return
+            guard let target = context.targets.first(where: { $0.session?.key == current.key }) else {
+                throw CCSError.message("Couldn’t identify this conversation’s Terminal tab. Use Option-Tab to select an open Codex tab. No additional tab was opened.")
             }
+            let focus = try runner("/usr/bin/osascript", ["-", current.terminalTitle, target.tab.tty], Self.focusScript, 5)
+            guard focus.code == 0, focus.out.trimmingCharacters(in: .whitespacesAndNewlines) == "ok" else {
+                throw CCSError.message("Couldn’t focus that Terminal tab. Refresh and try again.")
+            }
+            return
+        }
+        guard current.isSaved else {
+            throw CCSError.message("Codex live status is unavailable. Open or resume the conversation in Codex; CCS did not open another tab.")
         }
         try openTerminal(codex.resumeCommand(current), title: current.terminalTitle)
     }

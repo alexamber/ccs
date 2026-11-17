@@ -74,38 +74,50 @@ final class CodexTests: XCTestCase {
         8 0 ttys007 codex --remote ws://remote-host:4500 resume abc
         9 0 ttys008 codex --remote=unix:///tmp/another-server resume abc
         """
-        XCTAssertEqual(CodexProvider.candidateTTYs(id: "abc", processList: processes, localSocketPath: "/tmp/socket", arguments: { pid in
+        let arguments: (Int32) -> [String]? = { pid in
             let line = processes.split(separator: "\n").first { $0.split(separator: " ").first == Substring(String(pid)) }!
             return shellWords(String(line.split(maxSplits: 3, whereSeparator: { $0.isWhitespace })[3]))
-        }), ["ttys001", "ttys006"])
-    }
-    func testCodexActivationFocusesExactTabOrOpensSameConversationWithoutATurn() throws {
-        let entry = record("abc", cwd: "/tmp/it's here", status: "idle")
-        let client = MockCodexConnection { method, params in
-            if method == "thread/list" { return ["data": [entry]] }
-            XCTAssertEqual(method, "thread/read"); XCTAssertEqual(params["threadId"] as? String, "abc")
-            XCTAssertEqual(params["includeTurns"] as? Bool, false)
-            return ["thread": entry]
         }
-        let codex = CodexProvider(connector: { client })
-        var scripts = [(String, [String])](), found = true
-        let service = SessionService(runner: { path, args, script, _ in
-            if path == "/bin/ps" { return CommandResult(out: "1 0 ttys001 codex resume abc") }
-            scripts.append((script ?? "", args)); return CommandResult(out: found ? "ok\n" : "missing\n")
-        }, codex: codex, arguments: { _ in ["codex", "resume", "abc"] })
-        let session = try CodexProvider.session(entry, authoritative: true)
-        try service.activate(session)
-        XCTAssertEqual(scripts.count, 1); XCTAssertEqual(scripts[0].0, SessionService.focusScript)
-        XCTAssertEqual(scripts[0].1, ["-", session.terminalTitle, "/dev/ttys001"])
-        found = false; scripts.removeAll(); try service.activate(session)
-        XCTAssertEqual(scripts.last?.0, SessionService.launchScript)
-        XCTAssertEqual(scripts.last?.1.dropFirst().first, session.terminalTitle)
-        XCTAssertEqual(scripts.last?.1.last, codex.launchCommand + " --cd '/tmp/it'\\''s here' resume 'abc'")
-        scripts.removeAll(); try service.activate(session, fresh: true)
-        XCTAssertEqual(scripts.last?.1.dropFirst().first, "it's here")
-        XCTAssertEqual(scripts.last?.1.last, "cd '/tmp/it'\\''s here' && " + codex.launchCommand)
-        XCTAssertTrue(client.calls.allSatisfy { ["thread/read", "thread/list"].contains($0.0) })
+        for tty in ["ttys001", "ttys006"] {
+            let process = CodexProvider.terminalProcess(tty: tty, processList: processes, arguments: arguments)
+            XCTAssertEqual(process?.launchSessionID, "abc")
+            XCTAssertEqual(process?.canMatchSession(localSocketPath: "/tmp/socket"), true)
+        }
+        for tty in ["ttys003", "ttys004", "ttys005", "??"] {
+            XCTAssertNil(CodexProvider.terminalProcess(tty: tty, processList: processes, arguments: arguments))
+        }
+        for tty in ["ttys007", "ttys008"] {
+            let process = CodexProvider.terminalProcess(tty: tty, processList: processes, arguments: arguments)
+            XCTAssertNotNil(process, "Remote clients can still be focused without a conversation label")
+            XCTAssertEqual(process?.canMatchSession(localSocketPath: "/tmp/socket"), false)
+        }
     }
+    func testCodexActivationNeverResumesAnUnmatchedLiveOrUnknownConversation() throws {
+        var entry = record("abc", cwd: "/tmp/project", status: "idle")
+        let client = MockCodexConnection { method, _ in
+            method == "thread/list" ? ["data": [entry]] : ["thread": entry]
+        }
+        var launched = 0
+        let service = SessionService(runner: { path, _, script, _ in
+            if path == "/bin/ps" { return CommandResult(out: "") }
+            if script == SessionService.switchTabsScript { return CommandResult(out: "") }
+            XCTAssertEqual(script, SessionService.launchScript)
+            launched += 1; return CommandResult(out: "ok")
+        }, codex: CodexProvider(connector: { client }))
+        let session = try CodexProvider.session(entry, authoritative: true)
+        XCTAssertThrowsError(try service.activate(session))
+        XCTAssertEqual(launched, 0)
+        entry["status"] = ["type": "notLoaded"]
+        try service.activate(session)
+        XCTAssertEqual(launched, 1, "An authoritatively closed conversation can resume")
+        try service.activate(session, fresh: true)
+        XCTAssertEqual(launched, 2)
+        let unknown = SessionService(runner: { _, _, _, _ in
+            XCTFail("Unknown live state must not launch a viewer"); return CommandResult()
+        }, codex: CodexProvider(connector: { MockCodexConnection(shared: false) { _, _ in ["thread": entry] } }))
+        XCTAssertThrowsError(try unknown.activate(session))
+    }
+
     func testCleanupPreservesArchivedAndSubagentFoldersAndFailsClosed() throws {
         let root = try temporary()
         let folders = try (1...3).map { number -> URL in
@@ -216,8 +228,7 @@ final class CodexTests: XCTestCase {
         XCTAssertEqual(Array(words.dropFirst()), child.arguments!)
         // This is the exact, unescaped command representation emitted by ps.
         let listing = "\(child.processIdentifier) 1 ttys001 " + words.joined(separator: " ")
-        XCTAssertEqual(CodexProvider.candidateTTYs(id: "abc", processList: listing), ["ttys001"])
-        XCTAssertTrue(CodexProvider.candidateTTYs(id: "abc-other", processList: listing).isEmpty)
+        XCTAssertNil(CodexProvider.terminalProcess(tty: "ttys001", processList: listing), "An extra positional argument is not a recognized interactive launch")
     }
 
     func testCodexHomeIsPreservedForResumeFreshAndNewSessionCommands() throws {

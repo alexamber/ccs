@@ -44,9 +44,11 @@ process matching on the existing history lane. A full history snapshot can be
 reused for ten seconds, with fresh process inspection and a metadata refresh on
 a miss. Unmatched tabs retry after five seconds; activity spinners do not trigger
 metadata loads. Ambiguous matches are discarded.
-For plain local Codex clients without an ID in argv, the popup can match the
-process working directory and native tab title to one live conversation. This
-fallback supports informational labels and focusing an existing tab, never launching or resuming a process.
+Codex labels require one recognized interactive client on the tty and exactly one
+live conversation matching its folder and native title. A launch `resume ID` must
+agree with that match; it cannot resolve ambiguous titles or prove current identity.
+Remote clients can receive labels only when connected to the local metadata socket.
+This remains a conservative heuristic, not a provider-owned tty/thread mapping.
 There is at most one tab read and one metadata lookup in flight; generation checks
 discard results after a tab/app switch or settings change. A nonactivating
 panel shows a title oval for 2.5 seconds, pauses shrinking on hover, then collapses
@@ -88,11 +90,18 @@ runs only while the switcher is visible to detect Option release. Before focus,
 the selected tty/session association is revalidated. One process snapshot is shared
 across tab matching; focus validates only the chosen tty. Claude activation refreshes
 live PIDs instead of trusting the chooser’s cached identities. The action lane initializes
-its own Codex connection with a metadata read before matching local remote clients;
+its own Codex connection with a metadata read before matching confirmed local clients;
 it cannot rely on the history lane's previously discovered socket. This path never invokes resume,
-attach, or launch. The regular picker also tries the plain-Codex folder/title
-match before opening an additional viewer. Both pickers list distinct conversations,
-not individual clients connected to the same conversation.
+attach, or launch.
+
+Unconfirmed interactive Codex clients are represented by tty and PID, without
+conversation metadata. Focusing these rows checks that the same recognized process
+still owns the tty, preserves the native title, and requires no metadata connection.
+Confirmed Codex targets also recheck their process identity before focus.
+The regular picker refuses to open an additional viewer for an unmatched live
+conversation or unknown live state; only authoritatively saved history can resume.
+Confirmed conversations are deduplicated by provider and ID. Unconfirmed clients
+remain separate because their conversation identity is unknown.
 
 Codex history comes from read-only `thread/list` and `thread/read` requests.
 `CodexRPCConnection` uses WebSocket framing over the existing daemon’s local Unix

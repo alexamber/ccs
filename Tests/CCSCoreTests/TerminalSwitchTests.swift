@@ -91,6 +91,67 @@ final class TerminalSwitchTests: XCTestCase {
         XCTAssertThrowsError(try service.focusTerminalTarget(target, sessions: [session]))
         XCTAssertEqual(focusCalls, 1, "An ended session must never be resumed by the switcher")
     }
+    func testUnconfirmedCodexTabRemainsFocusableWithoutMetadataOrRenaming() throws {
+        var pid = 123, title = "Other topic", focusCalls = 0
+        let service = SessionService(runner: { path, args, script, _ in
+            if path == "/bin/ps" { return CommandResult(out: "\(pid) 1 ttys001 codex") }
+            if path == "/usr/sbin/lsof" { return CommandResult(out: "n/tmp/work") }
+            if script == SessionService.switchTabsScript {
+                return CommandResult(out: "/dev/ttys001\u{1e}/dev/ttys001\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}\(title)")
+            }
+            XCTAssertEqual(script, SessionService.focusScript)
+            XCTAssertEqual(args, ["-", "", "/dev/ttys001"], "Unconfirmed focus must preserve the native title")
+            focusCalls += 1; return CommandResult(out: "ok")
+        }, codex: CodexProvider(connector: { XCTFail("Generic tab switching needs no metadata connection"); throw CCSError.message("unexpected") }),
+           arguments: { _ in ["codex", "resume", "abc"] })
+        var original = Session(id: "abc", cwd: "/tmp/work", title: "Original topic", provider: .codex)
+        original.status = "idle"
+        var other = original; other.id = "def"; other.title = "Other topic"
+        let context = try service.terminalSwitchContext(sessions: [original, other])
+        let target = try XCTUnwrap(context.targets.first)
+        XCTAssertNil(target.session, "Stale resume ID must not override the current native title")
+        XCTAssertEqual(target.title, "Codex tab")
+        XCTAssertEqual(context.currentKey, target.key)
+        XCTAssertEqual(target.processID, 123)
+        try service.focusTerminalTarget(target, sessions: [original, other])
+        XCTAssertEqual(focusCalls, 1)
+        pid = 124
+        XCTAssertThrowsError(try service.focusTerminalTarget(target, sessions: [original, other]))
+        XCTAssertEqual(focusCalls, 1, "A reused tty must not authorize focus")
+        for renamed in ["", "Custom name"] {
+            title = renamed
+            XCTAssertNil(try service.terminalSwitchContext(sessions: [original]).targets.first?.session)
+            XCTAssertTrue(try service.terminalSwitchContext(sessions: [], includeUnconfirmedCodex: false).targets.isEmpty)
+        }
+    }
+
+    func testConfirmedResumeNeedsUniqueLiveTitleAndFolderAndDeduplicatesViewers() throws {
+        var title = "Topic", directory = "/tmp/work"
+        let service = SessionService(runner: { path, _, script, _ in
+            if path == "/bin/ps" { return CommandResult(out: "123 1 ttys001 codex\n124 1 ttys002 codex") }
+            if path == "/usr/sbin/lsof" { return CommandResult(out: "n" + directory) }
+            XCTAssertEqual(script, SessionService.switchTabsScript)
+            return CommandResult(out: "/dev/ttys002" + ["001", "002"].map {
+                "\u{1e}/dev/ttys\($0)\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}\(title)"
+            }.joined())
+        }, arguments: { _ in ["codex", "resume", "abc"] })
+        var session = Session(id: "abc", cwd: "/tmp/work", title: "Topic", provider: .codex)
+        session.status = "idle"
+        let matched = try service.terminalSwitchContext(sessions: [session])
+        XCTAssertEqual(matched.targets.count, 1)
+        XCTAssertEqual(matched.currentKey, session.key)
+        XCTAssertEqual(matched.targets.first?.session?.key, session.key)
+        var duplicate = session; duplicate.id = "other"
+        let ambiguous = try service.terminalSwitchContext(sessions: [session, duplicate])
+        XCTAssertEqual(ambiguous.targets.count, 2, "Unconfirmed clients cannot safely be deduplicated by conversation")
+        XCTAssertTrue(ambiguous.targets.allSatisfy { $0.session == nil })
+        XCTAssertEqual(Set(ambiguous.targets.map(\.key)).count, 2)
+        directory = "/tmp/another"
+        XCTAssertTrue(try service.terminalSwitchContext(sessions: [session]).targets.allSatisfy { $0.session == nil })
+        directory = "/tmp/work"; title = "Renamed"
+        XCTAssertTrue(try service.terminalSwitchContext(sessions: [session]).targets.allSatisfy { $0.session == nil })
+    }
+
     func testSwitchAppleScriptCompiles() throws {
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".scpt")
         defer { try? FileManager.default.removeItem(at: path) }

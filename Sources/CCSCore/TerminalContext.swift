@@ -74,24 +74,21 @@ extension SessionService {
             if let words = self.processArguments(pid) { argv[pid] = words; return words }
             missing.insert(pid); return nil
         }
-        for session in sessions {
-            let candidates: [String]
-            if session.provider == .codex {
-                candidates = CodexProvider.candidateTTYs(id: session.id, processList: codexProcesses,
-                                                       localSocketPath: codex.sharedSocketPath, arguments: arguments)
-            } else if let live = session.live {
-                candidates = Self.candidateTTYs(session, live: live, processList: listing, arguments: arguments)
-            } else { continue }
-            if candidates.contains(device) { matches.append(session) }
-            if matches.count > 1 { return nil }
+        for session in sessions where session.provider == .claude {
+            guard let live = session.live else { continue }
+            if Self.candidateTTYs(session, live: live, processList: listing, arguments: arguments).contains(device) {
+                matches.append(session)
+            }
         }
-        if let match = matches.first { return match }
-        // A bare `codex` has no thread ID in argv. Require a local interactive
-        // process, its folder, and a unique live title match. This supports
-        // labels and focus-only switching, never launching or resuming a process.
-        guard !title.isEmpty,
-              let process = CodexProvider.untargetedTerminalProcess(tty: device, processList: codexProcesses,
-                  localSocketPath: codex.sharedSocketPath, arguments: arguments),
+        let process = CodexProvider.terminalProcess(tty: device, processList: codexProcesses, arguments: arguments)
+        if !matches.isEmpty { return matches.count == 1 && process == nil ? matches[0] : nil }
+        // Every Codex label needs a unique live topic + folder match. A resume
+        // argument alone must not label or activate a conversation changed in-app.
+        let topics = sessions.filter {
+            $0.provider == .codex && $0.isLive && CodexProvider.terminalTitle(title, matches: $0.title)
+        }
+        // Generic tab focus requires no folder inspection or metadata lookup.
+        guard !topics.isEmpty, let process, process.canMatchSession(localSocketPath: codex.sharedSocketPath),
               let cwdResult = try? runner("/usr/sbin/lsof", ["-a", "-p", String(process.pid), "-d", "cwd", "-Fn"], nil, 3), cwdResult.code == 0 else { return nil }
         let paths = cwdResult.out.split(separator: "\n").filter { $0.hasPrefix("n/") }.map { String($0.dropFirst()) }
         guard paths.count == 1 else { return nil }
@@ -99,10 +96,10 @@ extension SessionService {
             URL(fileURLWithPath: $0, relativeTo: URL(fileURLWithPath: paths[0], isDirectory: true)).standardizedFileURL.path
         } ?? paths[0]
         let directory = physicalPath(cwd)
-        let candidates = sessions.filter {
-            $0.provider == .codex && $0.isLive && physicalPath($0.cwd) == directory &&
-                CodexProvider.terminalTitle(title, matches: $0.title)
-        }
-        return candidates.count == 1 ? candidates[0] : nil
+        let candidates = topics.filter { physicalPath($0.cwd) == directory }
+        guard candidates.count == 1 else { return nil }
+        let candidate = candidates[0]
+        if let launchID = process.launchSessionID, launchID != candidate.id { return nil }
+        return candidate
     }
 }

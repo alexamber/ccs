@@ -95,13 +95,16 @@ final class TerminalContextTests: XCTestCase {
 
     func testTTYMatchingRejectsUnknownAndAmbiguousTabsAndSupportsCodex() throws {
         let processes = "10 1 ttys001 claude\n20 1 ttys002 codex resume abc\n30 10 ?? claude daemon"
-        let service = SessionService(runner: { _, _, _, _ in CommandResult(out: processes) },
+        let service = SessionService(runner: { path, _, _, _ in CommandResult(out: path == "/usr/sbin/lsof" ? "n/tmp/codex" : processes) },
                                      arguments: { $0 == 20 ? ["codex", "resume", "abc"] : ["claude"] })
         var claude = Session(id: "abc", cwd: "/tmp/claude")
         claude.live = try JSONDecoder().decode(LiveSession.self, from: Data("{\"sessionId\":\"abc\",\"pid\":10}".utf8))
-        let codex = Session(id: "abc", cwd: "/tmp/codex", provider: .codex)
+        var codex = Session(id: "abc", cwd: "/tmp/codex", title: "Topic", provider: .codex)
+        codex.status = "idle"
         XCTAssertEqual(service.session(inTerminalTTY: "/dev/ttys001", sessions: [claude, codex])?.key, "claude:abc")
-        XCTAssertEqual(service.session(inTerminalTTY: "/dev/ttys002", sessions: [claude, codex])?.key, "codex:abc")
+        XCTAssertNil(service.session(inTerminalTTY: "/dev/ttys002", sessions: [claude, codex]))
+        let tab = try XCTUnwrap(TerminalTabSnapshot(output: "/dev/ttys002\n0\n0\n900\n600\nTopic"))
+        XCTAssertEqual(service.session(inTerminalTab: tab, sessions: [claude, codex])?.key, "codex:abc")
         XCTAssertNil(service.session(inTerminalTTY: "/dev/ttys003", sessions: [claude, codex]))
         XCTAssertNil(service.session(inTerminalTTY: "ttys001", sessions: [claude]))
         var background = Session(id: "background", cwd: "/tmp")
@@ -149,16 +152,15 @@ final class TerminalContextTests: XCTestCase {
     func testPlainCodexProcessDetectionRejectsOtherCommandsAndMultipleClients() {
         let listing = "42 1 ttys001 codex\n43 1 ttys002 codex"
         for words in [["codex"], ["/bin/codex", "--cd", "/tmp/work", "--model=example"], ["codex", "--remote", "unix:///tmp/local"]] {
-            XCTAssertEqual(CodexProvider.untargetedTerminalProcess(tty: "ttys001", processList: listing,
-                localSocketPath: "/tmp/local", arguments: { _ in words })?.pid, 42)
+            XCTAssertEqual(CodexProvider.terminalProcess(tty: "ttys001", processList: listing,
+                arguments: { _ in words })?.pid, 42)
         }
-        for words in [["codex", "exec"], ["codex", "app-server"], ["codex", "resume", "abc"],
-                      ["codex", "--remote", "unix:///tmp/other"], ["sh", "codex"], ["codex", "--cd"], ["codex", "--unknown"]] {
-            XCTAssertNil(CodexProvider.untargetedTerminalProcess(tty: "ttys001", processList: listing,
-                localSocketPath: "/tmp/local", arguments: { _ in words }))
+        for words in [["codex", "exec"], ["codex", "app-server"], ["sh", "codex"], ["codex", "--cd"], ["codex", "--unknown"]] {
+            XCTAssertNil(CodexProvider.terminalProcess(tty: "ttys001", processList: listing,
+                arguments: { _ in words }))
         }
-        XCTAssertNil(CodexProvider.untargetedTerminalProcess(tty: "ttys001", processList: "42 1 ttys001 codex\n43 1 ttys001 codex",
-            localSocketPath: nil, arguments: { _ in ["codex"] }))
+        XCTAssertNil(CodexProvider.terminalProcess(tty: "ttys001", processList: "42 1 ttys001 codex\n43 1 ttys001 codex",
+            arguments: { _ in ["codex"] }))
     }
 
     func testCodexNativeTitlesMatchWholeNamesAndConservativeTruncation() {

@@ -79,80 +79,6 @@ is verified. Removing the cask should leave user transcripts and settings intact
 
 No release has been published merely by running the local build scripts.
 
-## Terminal switcher release review (2026-11-17)
-
-The working branch adds native tab titles, an optional floating session bubble,
-an Option-Tab chooser, folder artifact discovery, and unicorn artwork. The original
-proposal's “Current” marker in the main/CLI pickers and periodic tab renaming are
-not implemented. Titles change on launch/focus and replace manually assigned titles.
-
-Review fixes cover bare-Codex duplicate viewers, fresh Claude PID validation,
-cancel/reopen races and stale current-tab selection in the compact chooser,
-shared process inspection across tabs, retrying unmatched popup tabs, and detecting
-topic changes without reacting to spinner animation. Unused compact artifact-list
-code was removed. Shortcut registration now rolls back both switcher shortcuts
-if either fails. Picker positioning is clamped to the screen’s visible area.
-
-Validation for this review: 58 core tests and 18 AppKit tests passed; light/dark
-test renders were generated and the main dark layouts inspected. The development
-app and CLI built for arm64 and x86_64, strict signature verification passed, and
-`scripts/check-native.py` passed metadata/CLI, real-process cleanup, and PTY picker
-checks. No public release or live Spaces/clean-account sign-off is implied.
-
-Before publishing:
-
-- Choose a new version/build number; the bundle still declares 1.0.2 (7).
-  Do not overwrite the existing release artifacts or cask checksum.
-- The user supplied a generated replacement unicorn, now used by the app. Its
-  provenance is recorded in `unicorn-icon.md`; generation alone does not establish
-  third-party rights clearance. Publish only the clean `feat/terminal-session-ui`
-  branch; the earlier local `feat/terminal-session-titles` history contains the
-  replaced VectorStock-derived assets and should not be pushed.
-- Test real Claude and Codex tabs, rapid Option-Tab/reverse/cancel/reopen, denied
-  Automation, multiple displays and Spaces, and protected folders on a clean user
-  account. Unit tests simulate these integrations; compilation is not live OS QA.
-- Build and notarize with the release credentials. A development app is not a
-  signed, notarized public release. Run the packaged CLI checks on the final build.
-
-Known limitations worth keeping visible:
-
-- The switcher counts conversations, not clients. Two tabs attached to the same
-  session ID produce one row. Shared folders alone do not merge sessions.
-- Bare Codex matching is a conservative title/folder heuristic. Custom titles,
-  unknown flags, identical topics in one folder, or unavailable live metadata can
-  prevent matching. The normal picker may then open another viewer of the same
-  conversation; Option-Tab never resumes one. Launch argv can also become stale
-  if the client switches conversations internally. A provider-owned tty/thread
-  mapping would be stronger than either argv or titles.
-- The monitor starts up to four short AppleScript processes per second while
-  Terminal is frontmost and popups are enabled. Profile energy use on a laptop
-  before increasing polling frequency. The feature remains optional and off by default.
-- First switch/refresh can wait for provider metadata on the history queue. Cached
-  rows appear immediately, but an unverified current tab cannot authorize a switch.
-- Discovery is shallow and intentionally skips protected folders and external
-  volumes. Its time budget is checked between filesystem calls, not a hard I/O
-  timeout. Custom mounts or privacy controls may still produce access prompts.
-
-## Mac App Store assessment
-
-This variant targets Developer ID distribution, not the Mac App Store. Its
-entitlements enable hardened-runtime Apple events but do not enable App Sandbox.
-Sandboxing is mandatory under Apple's [guideline 2.4.5(i)](https://developer.apple.com/app-store/review/guidelines/#hardware-compatibility).
-
-A Store build needs a separate design for reading other apps' history, inspecting
-processes, accessing the local Codex socket, running external CLIs, creating session
-folders, and installing the `~/.local/bin/ccs` symlink. These behaviors do not become
-sandbox-compatible just by adding an entitlement. The self-contained-installation
-requirements in guideline 2.4.5(ii) also need review for CLI installation.
-
-Terminal automation is not automatically prohibited, but sandboxed Apple events
-require supported scripting targets or an approved temporary exception, in
-addition to user consent. Apple's [Apple-event exception documentation](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/AppSandboxTemporaryExceptionEntitlements.html)
-and [submission requirements](https://developer.apple.com/help/app-store-connect/reference/app-uploads/app-sandbox-information/)
-describe that review path; approval is not assured. The floating panel and icon
-are not themselves the sandbox blocker. Asset licensing still applies to either
-distribution route.
-
 ## Manual sign-off checklist
 
 Use the installed build intended for release. Record the macOS version, machine,
@@ -169,7 +95,10 @@ Claude/Codex versions and build number. Avoid testing with unsaved work at risk.
    the correct folder's files on click. A plain shell tab gets no session bubble.
 3. **Identity edge cases.** Rename a Codex tab, then separately change conversations
    inside a running Codex client. Pass: CCS either identifies the current
-   conversation correctly or declines to match it. A wrong topic, wrong focus,
+   conversation correctly or shows “Codex tab · Conversation unconfirmed” in
+   Option-Tab, without a session popup. The generic row must still focus that tab.
+   Enter on an unmatched live conversation in the full picker must explain the
+   failure without opening another viewer. A wrong topic, wrong focus,
    or unexpected extra viewer is a failure; record which action caused it.
 4. **Fast switching and cancellation.** Hold Option and tap Tab repeatedly; reverse
    with Shift; release Option. Then press Escape and immediately reopen/cancel.
@@ -206,3 +135,10 @@ Claude/Codex versions and build number. Avoid testing with unsaved work at risk.
 
 Cases 3, 5 and 6 are particularly important: unit tests do not prove live provider
 identity, macOS Space behavior, or real privacy-permission recovery.
+
+## Distribution scope
+
+This build targets Developer ID distribution. It is not sandboxed and is not
+prepared for Mac App Store submission. Store distribution needs a separate design
+for external CLI execution, process inspection, history/socket access, Terminal
+automation, and CLI installation.

@@ -140,51 +140,42 @@ public final class CodexProvider {
         } else { session.status = "unknown" }
         return session
     }
-    static func candidateTTYs(id: String, processList: String, localSocketPath: String? = nil, arguments: (Int32) -> [String]? = ProcessArguments.read) -> [String] {
-        var result = [String](), seen = Set<String>()
-        let valuedOptions = Set(["-C", "--cd", "-c", "--config", "--remote", "--remote-auth-token-env", "-m", "--model", "-p", "--profile", "-s", "--sandbox", "-a", "--ask-for-approval", "--add-dir"])
-        for line in processList.split(separator: "\n") {
-            let columns = line.split(maxSplits: 3, omittingEmptySubsequences: true, whereSeparator: { $0.isWhitespace })
-            guard columns.count == 4, columns[2] != "??" else { continue }
-            guard let pid = Int32(columns[0]), let words = arguments(pid) else { continue }
-            guard let first = words.first, URL(fileURLWithPath: first).lastPathComponent == "codex" else { continue }
-            var remote = words.first(where: { $0.hasPrefix("--remote=") }).map { String($0.dropFirst(9)) }
-            if let flag = words.firstIndex(of: "--remote"), flag + 1 < words.count { remote = words[flag + 1] }
-            if let remote {
-                guard let localSocketPath, remote == "unix://" || remote == "unix://" + localSocketPath else { continue }
-            }
-            var index = 1, resume = false
-            while index < words.count {
-                let word = words[index]
-                if valuedOptions.contains(word) { index += 2; continue }
-                if word.hasPrefix("-") { index += 1; continue }
-                if !resume {
-                    guard word == "resume" else { break }
-                    resume = true; index += 1; continue
-                }
-                if word == id, seen.insert(String(columns[2])).inserted { result.append(String(columns[2])) }
-                break
-            }
+    struct TerminalProcess {
+        let pid: Int32
+        let directory: String?
+        let launchSessionID: String?
+        let remote: String?
+        let choosingSession: Bool
+
+        func canMatchSession(localSocketPath: String?) -> Bool {
+            guard !choosingSession else { return false }
+            guard let remote else { return true }
+            guard let localSocketPath else { return false }
+            return remote == "unix://" || remote == "unix://" + localSocketPath
         }
-        return result
     }
 
-    /// Recognize a plain local interactive CLI conservatively. Commands such as
-    /// exec, app-server, resume, fork, and unknown launch options are not fallbacks.
-    static func untargetedTerminalProcess(tty: String, processList: String, localSocketPath: String?,
-                                          arguments: (Int32) -> [String]?) -> (pid: Int32, directory: String?)? {
+    /// Identify one interactive client on this tty. Launch IDs are corroborating
+    /// evidence only: the client can change conversations without changing argv.
+    static func terminalProcess(tty: String, processList: String,
+                                arguments: (Int32) -> [String]? = ProcessArguments.read) -> TerminalProcess? {
         let valued = Set(["-C", "--cd", "-c", "--config", "--remote", "--remote-auth-token-env", "-m", "--model", "-p", "--profile", "-s", "--sandbox", "-a", "--ask-for-approval", "--add-dir"])
         let flags = Set(["--no-alt-screen", "--full-auto", "--search", "--dangerously-bypass-approvals-and-sandbox"])
-        var found = [(pid: Int32, directory: String?)]()
+        var found = [TerminalProcess]()
         for line in processList.split(separator: "\n") {
             let columns = line.split(maxSplits: 3, whereSeparator: \.isWhitespace)
-            guard columns.count == 4, columns[2] == tty, let pid = Int32(columns[0]),
+            guard columns.count == 4, columns[2] == tty, columns[2] != "??", let pid = Int32(columns[0]),
                   let words = arguments(pid), let first = words.first,
                   URL(fileURLWithPath: first).lastPathComponent == "codex" else { continue }
-            var index = 1, valid = true, remote: String?, directory: String?
+            var index = 1, valid = true, resume = false, remote: String?, directory: String?, launchID: String?
             while index < words.count {
-                let word = words[index], parts = word.split(separator: "=", maxSplits: 1).map(String.init)
+                let word = words[index], parts = word.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
                 if flags.contains(word) { index += 1; continue }
+                if word == "resume", !resume { resume = true; index += 1; continue }
+                if !word.hasPrefix("-"), resume, launchID == nil {
+                    launchID = word; index += 1; continue
+                }
+                if resume, ["--last", "--all"].contains(word) { index += 1; continue }
                 guard let option = parts.first, valued.contains(option) else { valid = false; break }
                 let value: String
                 if parts.count == 2 { value = parts[1] }
@@ -193,12 +184,13 @@ public final class CodexProvider {
                     guard index < words.count else { valid = false; break }
                     value = words[index]
                 }
+                guard !value.isEmpty else { valid = false; break }
                 if option == "--remote" { remote = value }
                 if option == "--cd" || option == "-C" { directory = value }
                 index += 1
             }
-            if let remote, remote != "unix://" && remote != localSocketPath.map({ "unix://" + $0 }) { valid = false }
-            if valid { found.append((pid, directory)) }
+            if valid { found.append(TerminalProcess(pid: pid, directory: directory, launchSessionID: launchID,
+                                                    remote: remote, choosingSession: resume && launchID == nil)) }
         }
         return found.count == 1 ? found[0] : nil
     }

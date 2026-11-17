@@ -53,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.engine.perform({ service, _ in try service.focusTerminalTarget(target, sessions: sessions) }) { [weak self] result in
                 switch result {
                 case .success:
-                    self?.rememberSwitch(target.session.key)
+                    self?.rememberSwitch(target.key)
                 case .failure(let error):
                     self?.switchUpdated = .distantPast
                     showError(error)
@@ -138,9 +138,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     private func orderedTargets(_ targets: [TerminalSwitchTarget]) -> [TerminalSwitchTarget] {
         targets.sorted {
-            let a = switchHistory.firstIndex(of: $0.session.key) ?? Int.max
-            let b = switchHistory.firstIndex(of: $1.session.key) ?? Int.max
-            return a == b ? $0.session.mtime > $1.session.mtime : a < b
+            let a = switchHistory.firstIndex(of: $0.key) ?? Int.max
+            let b = switchHistory.firstIndex(of: $1.key) ?? Int.max
+            return a == b ? ($0.session?.mtime ?? 0) > ($1.session?.mtime ?? 0) : a < b
         }
     }
     private func switchSession(step: Int) {
@@ -154,7 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         engine.perform(background: true, { service, _ in
             // A session started since the picker last opened must be switchable.
             let sessions = try service.collect(days: 0, provider: .all, enabledProviders: enabled)
-            return try service.terminalSwitchContext(sessions: sessions.filter { enabled.contains($0.provider) })
+            return try service.terminalSwitchContext(sessions: sessions, includeUnconfirmedCodex: enabled.contains(.codex))
         }) { [weak self] result in
             guard let self, self.sessionSwitcher.presentation == presentation else { return }
             do {

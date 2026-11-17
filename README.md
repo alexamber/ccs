@@ -100,23 +100,25 @@ While enabled, CCS checks the selected tab about every quarter-second only while
 Terminal is frontmost. It reuses session metadata for up to ten seconds, with
 a fresh process check on each tab/topic change and a metadata refresh on a miss.
 Unmatched tabs are retried at five-second intervals while Terminal is frontmost.
-Unknown or ambiguous tabs produce no popup. Claude
-sessions can be started outside CCS. Codex matches explicit `codex resume ID`
-processes; plain local `codex` sessions also match when the process's working
-directory and native tab title identify exactly one live conversation. Custom
-titles, unavailable live metadata, unsupported launch options, or ambiguous names
-can prevent that fallback. It supports the popup, Option-Tab, and focusing an
-existing tab from the normal picker;
-it never authorizes launching or resuming a process. Switching quickly can skip
-intermediate tabs. Popups never rename tabs or open a session.
+Unknown or ambiguous tabs produce no popup. Claude sessions can be started outside
+CCS. Codex labels require a recognized interactive client and exactly one live
+conversation matching its folder and native tab title. If the client was launched
+with `resume ID`, that ID must agree too; launch arguments alone are not proof of
+the current conversation. Renamed tabs, conflicting IDs, unsupported launch options,
+or unavailable metadata can prevent a label. Switching quickly can skip intermediate
+tabs. Popups never rename tabs or open a session.
 
-**Option-Tab** opens a compact unicorn switcher listing only sessions matched to
-existing Terminal tabs, across enabled providers. It appears immediately, using
-recent results as a preview while refreshing in the background. Selection waits
+**Option-Tab** opens a compact switcher of existing Terminal tabs across enabled
+providers. Recognized Codex clients without a confirmed conversation appear as
+**Codex tab**, with their terminal identifier and “Conversation unconfirmed.”
+These rows focus the existing client without renaming it or guessing its files.
+The switcher appears immediately, using recent results as a preview while
+refreshing in the background. Selection waits
 for the current tab to be checked, then stays fixed for that gesture. Hold Option and tap Tab to
 cycle, add Shift to move backward, and release Option to focus the highlighted tab.
-Escape cancels. Each conversation appears once, even if multiple tabs share its
-session ID; different conversations in the same folder remain separate. This view does not scan folders or show artifacts; Option-Space
+Escape cancels. Each confirmed conversation appears once, even if multiple tabs share its
+session ID; different conversations in the same folder remain separate. Unconfirmed
+clients appear individually until CCS can identify them. This view does not scan folders or show artifacts; Option-Space
 opens the full picker with files. CCS remembers recently chosen sessions for quick switching back. Each
 focus rechecks the tab; an ended session is never resumed by this shortcut. These
 shortcuts use native hotkey registration and need no Accessibility permission.
@@ -177,9 +179,11 @@ title, folder and opening prompt. Unknown prompt counts and dollar totals are
 omitted. Integration was verified with Codex CLI 0.167.0.
 
 When available, CCS reads live status from the existing local Codex daemon. If it
-can only read saved metadata, rows show unknown live status. Enter focuses an
-exactly identifiable `codex resume ID` Terminal tab, or opens that conversation
-through Codex CLI. A new view does not submit a prompt. Codex desktop-window focus
+can only read saved metadata, rows show unknown live status. Enter focuses a
+matched live Terminal tab or resumes a conversation confirmed as saved. If the
+live tab cannot be identified, or live status is unknown, CCS explains the problem
+and opens no additional viewer. Use Option-Tab for an unconfirmed open client, or
+resume it directly in Codex. A new view does not submit a prompt. Codex desktop-window focus
 is outside this release. CCS never resumes threads or starts model turns merely
 to list history. See the [official app-server documentation](https://learn.chatgpt.com/docs/app-server).
 
