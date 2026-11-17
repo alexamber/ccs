@@ -168,4 +168,60 @@ public final class CodexProvider {
         }
         return result
     }
+
+    /// Recognize a plain local interactive CLI conservatively. Commands such as
+    /// exec, app-server, resume, fork, and unknown launch options are not fallbacks.
+    static func untargetedTerminalProcess(tty: String, processList: String, localSocketPath: String?,
+                                          arguments: (Int32) -> [String]?) -> (pid: Int32, directory: String?)? {
+        let valued = Set(["-C", "--cd", "-c", "--config", "--remote", "--remote-auth-token-env", "-m", "--model", "-p", "--profile", "-s", "--sandbox", "-a", "--ask-for-approval", "--add-dir"])
+        let flags = Set(["--no-alt-screen", "--full-auto", "--search", "--dangerously-bypass-approvals-and-sandbox"])
+        var found = [(pid: Int32, directory: String?)]()
+        for line in processList.split(separator: "\n") {
+            let columns = line.split(maxSplits: 3, whereSeparator: \.isWhitespace)
+            guard columns.count == 4, columns[2] == tty, let pid = Int32(columns[0]),
+                  let words = arguments(pid), let first = words.first,
+                  URL(fileURLWithPath: first).lastPathComponent == "codex" else { continue }
+            var index = 1, valid = true, remote: String?, directory: String?
+            while index < words.count {
+                let word = words[index], parts = word.split(separator: "=", maxSplits: 1).map(String.init)
+                if flags.contains(word) { index += 1; continue }
+                guard let option = parts.first, valued.contains(option) else { valid = false; break }
+                let value: String
+                if parts.count == 2 { value = parts[1] }
+                else {
+                    index += 1
+                    guard index < words.count else { valid = false; break }
+                    value = words[index]
+                }
+                if option == "--remote" { remote = value }
+                if option == "--cd" || option == "-C" { directory = value }
+                index += 1
+            }
+            if let remote, remote != "unix://" && remote != localSocketPath.map({ "unix://" + $0 }) { valid = false }
+            if valid { found.append((pid, directory)) }
+        }
+        return found.count == 1 ? found[0] : nil
+    }
+
+    static func normalizedTerminalTitle(_ nativeTitle: String) -> String {
+        var title = cleanText(nativeTitle)
+        for prefix in ["[ ! ] Action Required ", "[ . ] Action Required "] where title.hasPrefix(prefix) {
+            title = String(title.dropFirst(prefix.count))
+        }
+        let activity = Set("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏●")
+        while let first = title.first, activity.contains(first), title.dropFirst().first == " " {
+            title = String(title.dropFirst(2))
+        }
+        return title
+    }
+
+    static func terminalTitle(_ nativeTitle: String, matches sessionTitle: String) -> Bool {
+        let name = cleanText(sessionTitle)
+        guard !name.isEmpty else { return false }
+        let title = normalizedTerminalTitle(nativeTitle)
+        // Codex's default title uses the thread name (at most 48 graphemes)
+        // followed by " | " and the project. Require a whole title component.
+        let compact = name.count > 48 ? String(name.prefix(45)) + "..." : name
+        return [name, compact].contains { title == $0 || title.hasPrefix($0 + " | ") }
+    }
 }

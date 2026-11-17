@@ -50,7 +50,7 @@ public final class NewSessions {
         let root = settings.newRoot(environment: environment)
         let path = try create(root: root)
         let cleanup = settings.cleanup ? "; cd; \(service.codex.cleanupEnvironment) \(shellQuote(cliPath)) --prune \(shellQuote(path.path))" : ""
-        do { try service.openTerminal("cd \(shellQuote(path.path)) && \(provider == .codex ? service.codex.launchCommand : provider.command)\(cleanup)") }
+        do { try service.openTerminal("cd \(shellQuote(path.path)) && \(provider == .codex ? service.codex.launchCommand : provider.command)\(cleanup)", title: path.lastPathComponent) }
         catch { _ = rmdir(path.path); throw error }
         // A separate short-lived helper survives CLI exit and cannot block the
         // launch result or share an app-server connection with foreground work.

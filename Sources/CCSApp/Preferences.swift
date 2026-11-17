@@ -17,7 +17,7 @@ final class Preferences: NSObject {
     private let folder = NSTextField(labelWithString: "")
     private let folderHint = NSTextField(labelWithString: "")
     private let choose = NSButton(title: "Choose…", target: nil, action: nil)
-    private let cleanup = NSSwitch(), login = NSSwitch()
+    private let cleanup = NSSwitch(), login = NSSwitch(), terminalPopups = NSSwitch()
     private let cliIcon = NSImageView(), cliTitle = NSTextField(labelWithString: ""), cliDetail = NSTextField(labelWithString: "")
     private let cliAction = NSButton(title: "", target: nil, action: nil)
     private var environment = ProcessInfo.processInfo.environment
@@ -31,7 +31,7 @@ final class Preferences: NSObject {
 
     init(settings: Settings, engine: Engine) {
         self.settings = settings; self.engine = engine
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 426), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 458), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init()
         window.title = "CCS Settings"; window.isReleasedWhenClosed = false; window.center()
         shortcut.controlSize = .small; shortcut.font = .systemFont(ofSize: 12)
@@ -62,8 +62,10 @@ final class Preferences: NSObject {
             toggle.target = self; toggle.action = #selector(changeEnabledProviders)
         }
         cleanup.state = settings.cleanup ? .on : .off; cleanup.setAccessibilityLabel("Clean up empty session folders")
+        terminalPopups.setAccessibilityLabel("Show session when switching Terminal tabs")
+        terminalPopups.toolTip = "Show the session name at the upper-right of Terminal, then shrink to a CCS bubble. Click to search nearby files. Uses Terminal Automation permission."
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off; login.setAccessibilityLabel("Start at login")
-        for control in [days as NSControl, grouping, cleanup] {
+        for control in [days as NSControl, grouping, cleanup, terminalPopups] {
             control.controlSize = .small; control.font = .systemFont(ofSize: 12)
             control.target = self; control.action = #selector(changed)
         }
@@ -81,7 +83,7 @@ final class Preferences: NSObject {
         let sources = NSStackView(views: [claudeToggle, codexToggle]); sources.spacing = 14
         let newChoice = NSStackView(views: [newProvider, newProviderValue])
         let picker = section("Picker", rows: [row(label("Providers"), sources), row(label("Shortcut"), shortcut), row(label("Open with"), defaults), row(label("New sessions"), newChoice), row(label("Start at login"), login)])
-        let sessions = section("Sessions", rows: [row(folderText, choose, minimumHeight: 28), row(cleanupLabel, cleanup)])
+        let sessions = section("Sessions", rows: [row(folderText, choose, minimumHeight: 28), row(cleanupLabel, cleanup), row(label("Show session on Terminal tab switch"), terminalPopups)])
         cliTitle.font = .systemFont(ofSize: 12, weight: .medium)
         cliDetail.font = .systemFont(ofSize: 10); cliDetail.textColor = .secondaryLabelColor; cliDetail.lineBreakMode = .byTruncatingMiddle
         let cliText = NSStackView(views: [cliTitle, cliDetail]); cliText.orientation = .vertical; cliText.alignment = .leading; cliText.spacing = 2
@@ -145,6 +147,7 @@ final class Preferences: NSObject {
             toggle.toolTip = !toggle.isEnabled ? "Enable another provider before turning this one off" : provider.isInstalled(environment: environment) ? "Show \(provider.title) sessions" : "\(provider.title) command is not on your shell PATH; install it to open sessions"
         }
         cleanup.state = value.cleanup ? .on : .off
+        terminalPopups.state = value.terminalPopups ? .on : .off
         refreshFolder()
     }
     @objc private func changeNewProvider() {
@@ -196,8 +199,9 @@ final class Preferences: NSObject {
     @objc private func changed() {
         let old = settings
         settings.defaultDays = dateWindows[max(0, days.indexOfSelectedItem)]; settings.folders = grouping.selectedSegment == 1; settings.cleanup = cleanup.state == .on
+        settings.terminalPopups = terminalPopups.state == .on
         do { try onSave?(settings) }
-        catch { settings = old; days.selectItem(at: dateWindows.firstIndex(of: old.defaultDays) ?? 2); grouping.selectedSegment = old.folders ? 1 : 0; cleanup.state = old.cleanup ? .on : .off; showError(error, window: window) }
+        catch { apply(old); showError(error, window: window) }
     }
     @objc private func chooseDirectory() {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true

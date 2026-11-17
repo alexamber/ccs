@@ -82,6 +82,7 @@ final class CodexTests: XCTestCase {
     func testCodexActivationFocusesExactTabOrOpensSameConversationWithoutATurn() throws {
         let entry = record("abc", cwd: "/tmp/it's here", status: "idle")
         let client = MockCodexConnection { method, params in
+            if method == "thread/list" { return ["data": [entry]] }
             XCTAssertEqual(method, "thread/read"); XCTAssertEqual(params["threadId"] as? String, "abc")
             XCTAssertEqual(params["includeTurns"] as? Bool, false)
             return ["thread": entry]
@@ -95,12 +96,15 @@ final class CodexTests: XCTestCase {
         let session = try CodexProvider.session(entry, authoritative: true)
         try service.activate(session)
         XCTAssertEqual(scripts.count, 1); XCTAssertEqual(scripts[0].0, SessionService.focusScript)
+        XCTAssertEqual(scripts[0].1, ["-", session.terminalTitle, "/dev/ttys001"])
         found = false; scripts.removeAll(); try service.activate(session)
         XCTAssertEqual(scripts.last?.0, SessionService.launchScript)
+        XCTAssertEqual(scripts.last?.1.dropFirst().first, session.terminalTitle)
         XCTAssertEqual(scripts.last?.1.last, codex.launchCommand + " --cd '/tmp/it'\\''s here' resume 'abc'")
         scripts.removeAll(); try service.activate(session, fresh: true)
+        XCTAssertEqual(scripts.last?.1.dropFirst().first, "it's here")
         XCTAssertEqual(scripts.last?.1.last, "cd '/tmp/it'\\''s here' && " + codex.launchCommand)
-        XCTAssertTrue(client.calls.allSatisfy { $0.0 == "thread/read" })
+        XCTAssertTrue(client.calls.allSatisfy { ["thread/read", "thread/list"].contains($0.0) })
     }
     func testCleanupPreservesArchivedAndSubagentFoldersAndFailsClosed() throws {
         let root = try temporary()
@@ -223,15 +227,16 @@ final class CodexTests: XCTestCase {
         let executable = root.appendingPathComponent("codex")
         try Data("#!/bin/sh\n".utf8).write(to: executable)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
-        var commands = [String]()
-        let service = SessionService(runner: { _, args, _, _ in commands.append(args.last!); return CommandResult() }, codex: codex)
+        var commands = [String](), titles = [String]()
+        let service = SessionService(runner: { _, args, _, _ in commands.append(args.last!); titles.append(args[1]); return CommandResult() }, codex: codex)
         let session = Session(id: "abc", cwd: "/tmp/project", provider: .codex)
         XCTAssertTrue(codex.resumeCommand(session).contains("CODEX_HOME=" + shellQuote(home.path)))
         try service.activate(session, fresh: true)
         XCTAssertTrue(commands.last!.contains(codex.launchCommand))
         var settings = Settings(); settings.newDirectory = root.appendingPathComponent("sessions").path
         settings.newProvider = .codex
-        _ = try NewSessions(service: service, settings: settings, environment: env).start(cliPath: "/nonexistent/ccs")
+        let folder = try NewSessions(service: service, settings: settings, environment: env).start(cliPath: "/nonexistent/ccs")
+        XCTAssertEqual(titles.last, folder.lastPathComponent)
         XCTAssertTrue(commands.last!.contains(codex.launchCommand))
         XCTAssertTrue(commands.last!.contains(codex.cleanupEnvironment + " '/nonexistent/ccs' --prune"))
     }

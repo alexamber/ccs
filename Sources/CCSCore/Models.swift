@@ -47,6 +47,10 @@ public struct Session: Codable, Identifiable {
 
     public var isLarge: Bool { status == "closed" && (turns >= 20 || (cost ?? 0) >= 20) }
     public var displayTitle: String { title.isEmpty ? String(id.prefix(8)) : title }
+    public var terminalTitle: String { cleanText(title).nonempty ?? folderTitle }
+    public var folderTitle: String {
+        cwd.isEmpty ? provider.title : cleanText(URL(fileURLWithPath: cwd).lastPathComponent).nonempty ?? provider.title
+    }
     public var isLive: Bool { live != nil || (provider == .codex && ["idle", "active", "waiting", "error"].contains(status)) }
     public var isSaved: Bool { status == "closed" || status == "saved" }
     public var statistics: String {

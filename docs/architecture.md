@@ -24,7 +24,7 @@ and metadata cache; neither executable depends on Hammerspoon or Python.
 The picker preloads history at startup and retains its latest snapshot in memory.
 Reopening immediately displays searchable rows while refreshing in the background;
 closing the picker does not discard an in-flight result. Provider changes invalidate
-older requests. No periodic polling runs while hidden, and activation still checks
+older requests. No periodic history refresh runs while hidden, and activation still checks
 current session state before opening it. The first load after launch may take longer.
 
 Session metadata comes from Claude's local transcripts. Live status is refreshed
@@ -32,6 +32,67 @@ from `claude agents --json`, including immediately before activation. An unknown
 live state prevents Claude resume. Existing Terminal tabs are matched by process TTY;
 commands are passed as quoted arguments to AppleScript rather than interpolated
 into AppleScript source.
+
+Launch/focus scripts set the selected tab's custom title only when it differs.
+The title is a separate argument, and a local AppleScript error handler keeps
+cosmetic failures from failing the action. There is no title-ownership cache.
+
+The optional Terminal session popup has a quarter-second timer only while Terminal
+is frontmost. A dedicated queue reads the front tab's tty and window bounds with
+a bounded AppleScript call. A changed tty or normalized topic title triggers history collection and
+process matching on the existing history lane. A full history snapshot can be
+reused for ten seconds, with fresh process inspection and a metadata refresh on
+a miss. Unmatched tabs retry after five seconds; activity spinners do not trigger
+metadata loads. Ambiguous matches are discarded.
+For plain local Codex clients without an ID in argv, the popup can match the
+process working directory and native tab title to one live conversation. This
+fallback supports informational labels and focusing an existing tab, never launching or resuming a process.
+There is at most one tab read and one metadata lookup in flight; generation checks
+discard results after a tab/app switch or settings change. A nonactivating
+panel shows a title oval for 2.5 seconds, pauses shrinking on hover, then collapses
+to a small persistent CCS bubble. Clicking expands a searchable file selector and
+allows keyboard focus; resigning key collapses it. All phases retain the same
+upper-right Terminal anchor. A nonblocking 180 ms AppKit animation interpolates
+the frame and corner radius; interrupted transitions begin from the current frame.
+The unicorn mark remains visible throughout. The expanded selector fits up to five
+file rows and scrolls beyond that. PNG assets use SwiftPM resources in development
+and are copied into the signed app's Resources directory when packaging. The menu
+bar uses a monochrome template; the bubble uses the color artwork. The feature defaults off and
+uses the existing Apple-events permission, with no Accessibility observer.
+
+`ArtifactIndex` discovers documents from file metadata within the selected folder
+and two subdirectory levels, excluding symlinks, hidden files, packages, common
+source/build/cache directories, and housekeeping documents. Each scan stops after
+2,500 entries or one second between enumeration steps, and retains up to 100 files.
+`ArtifactService` serializes discovery and a local usage ledger, with a five-second,
+32-folder cache. No file contents are indexed and no filesystem watcher runs.
+`ArtifactBrowser` shares the list and default-app opening behavior between the
+picker sidebar and expanded bubble selector. Selection loads are debounced and
+generation-checked; hidden views cancel pending results. Expanded selectors refresh
+every five seconds; collapsing or hiding stops that timer. Successful opens update a
+bounded local usage ledger, which gives frequently used reports a ranking boost.
+Home roots and their ancestors, privacy-protected user folders, system roots,
+and mounted/network volumes are rejected before enumeration. The same check runs
+after canonicalization; enumeration does not prefetch resource metadata, and
+protected child names are skipped before requesting their properties. A readability
+check alone is not sufficient to prevent macOS folder-access prompts.
+
+Option-Tab and Option-Shift-Tab have distinct Carbon hotkey IDs, dispatched only to
+their owning handler. On each gesture, Terminal tab enumeration is matched against
+live sessions. A dedicated compact `SessionSwitcher` appears immediately, reusing
+targets for up to 30 seconds as a nonselectable preview while a new snapshot loads.
+Each presentation has a generation token; old callbacks cannot populate a reopened
+switcher. The fresh current tab determines the initial selection, even with popups off. It does not instantiate
+an artifact browser. The candidate list stays fixed while cycling; a 40 ms modifier check
+runs only while the switcher is visible to detect Option release. Before focus,
+the selected tty/session association is revalidated. One process snapshot is shared
+across tab matching; focus validates only the chosen tty. Claude activation refreshes
+live PIDs instead of trusting the chooser’s cached identities. The action lane initializes
+its own Codex connection with a metadata read before matching local remote clients;
+it cannot rely on the history lane's previously discovered socket. This path never invokes resume,
+attach, or launch. The regular picker also tries the plain-Codex folder/title
+match before opening an additional viewer. Both pickers list distinct conversations,
+not individual clients connected to the same conversation.
 
 Codex history comes from read-only `thread/list` and `thread/read` requests.
 `CodexRPCConnection` uses WebSocket framing over the existing daemon’s local Unix

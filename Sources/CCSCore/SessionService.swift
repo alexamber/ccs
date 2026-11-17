@@ -5,6 +5,8 @@ public final class SessionService {
     public let runner: CommandRunner
     public let codex: CodexProvider
     private let arguments: (Int32) -> [String]?
+    private var terminalSnapshot: (sessions: [Session], providers: [Provider], date: Date)?
+    func processArguments(_ pid: Int32) -> [String]? { arguments(pid) }
     public private(set) var issues = [Provider: String]()
     public private(set) var historyFailures = Set<Provider>()
     public init(index: SessionIndex = SessionIndex(), runner: @escaping CommandRunner = ProcessRunner().command,
@@ -40,7 +42,18 @@ public final class SessionService {
             issues[.codex] = codex.issue
             if codex.historyAvailable { historyFailures.remove(.codex) } else { historyFailures.insert(.codex) }
         }
-        return sessions.sorted { $0.mtime == $1.mtime ? $0.key < $1.key : $0.mtime > $1.mtime }
+        let sorted = sessions.sorted { $0.mtime == $1.mtime ? $0.key < $1.key : $0.mtime > $1.mtime }
+        if days == 0, provider == .all { terminalSnapshot = (sorted, enabledProviders, Date()) }
+        return sorted
+    }
+    /// Reuse the picker's recent metadata, but always inspect current processes.
+    /// Refresh on a miss so a newly started session need not wait for cache expiry.
+    public func session(inTerminalTab tab: TerminalTabSnapshot, enabledProviders: [Provider]) throws -> Session? {
+        if let cached = terminalSnapshot, cached.providers == enabledProviders,
+           Date().timeIntervalSince(cached.date) < 10,
+           let match = session(inTerminalTab: tab, sessions: cached.sessions) { return match }
+        let sessions = try collect(days: 0, provider: .all, enabledProviders: enabledProviders)
+        return session(inTerminalTab: tab, sessions: sessions)
     }
     private func collectClaude(days: Int) throws -> [Session] {
         var sessions = try index.load(days: days)
@@ -74,7 +87,7 @@ public final class SessionService {
     }
     public func activate(_ s: Session, fresh: Bool = false) throws {
         if s.provider == .codex { return try activateCodex(s, fresh: fresh) }
-        if fresh { try openTerminal("cd \(shellQuote(s.cwd)) && claude"); return }
+        if fresh { try openTerminal("cd \(shellQuote(s.cwd)) && claude", title: s.folderTitle); return }
         // Always refresh at activation time. A stale screen must not authorize a duplicate resume.
         guard let running = liveSessions() else {
             throw CCSError.message("Cannot tell whether this session is still open (claude agents --json failed), so it was not resumed.")
@@ -82,33 +95,47 @@ public final class SessionService {
         if let live = running[s.id] {
             let ttys = (try? candidateTTYs(s, live: live)) ?? []
             if !ttys.isEmpty {
-                let result = try runner("/usr/bin/osascript", ["-"] + ttys.map { "/dev/" + $0 }, Self.focusScript, 15)
+                let result = try runner("/usr/bin/osascript", ["-", s.terminalTitle] + ttys.map { "/dev/" + $0 }, Self.focusScript, 15)
                 if result.out.trimmingCharacters(in: .whitespacesAndNewlines) == "ok" { return }
                 if result.code != 0 { throw CCSError.message(result.err.nonempty ?? "Terminal automation failed. Allow CCS in System Settings → Privacy & Security → Automation.") }
             }
             if live.kind == "interactive" {
                 throw CCSError.message("Window not found in Terminal.app (it may run in another terminal app).")
             }
-            try openTerminal("claude attach \(shellQuote(live.name?.nonempty ?? s.id))")
-        } else { try openTerminal("cd \(shellQuote(s.cwd)) && claude --resume \(shellQuote(s.id))") }
+            try openTerminal("claude attach \(shellQuote(live.name?.nonempty ?? s.id))", title: s.terminalTitle)
+        } else { try openTerminal("cd \(shellQuote(s.cwd)) && claude --resume \(shellQuote(s.id))", title: s.terminalTitle) }
     }
 
     private func activateCodex(_ s: Session, fresh: Bool) throws {
-        if fresh { try openTerminal("cd \(shellQuote(s.cwd)) && \(codex.launchCommand)"); return }
+        if fresh { try openTerminal("cd \(shellQuote(s.cwd)) && \(codex.launchCommand)", title: s.folderTitle); return }
         let current = try codex.current(s.id)
         if let processes = try? runner("/bin/ps", ["-axo", "pid=,ppid=,tty=,command="], nil, 5), processes.code == 0 {
             let ttys = CodexProvider.candidateTTYs(id: current.id, processList: processes.out, localSocketPath: codex.sharedSocketPath, arguments: arguments)
             if !ttys.isEmpty {
-                let focus = try runner("/usr/bin/osascript", ["-"] + ttys.map { "/dev/" + $0 }, Self.focusScript, 15)
+                let focus = try runner("/usr/bin/osascript", ["-", current.terminalTitle] + ttys.map { "/dev/" + $0 }, Self.focusScript, 15)
                 if focus.code != 0 { throw CCSError.message(focus.err.nonempty ?? "Terminal automation failed.") }
                 if focus.out.trimmingCharacters(in: .whitespacesAndNewlines) == "ok" { return }
             }
         }
-        try openTerminal(codex.resumeCommand(current))
+        if current.isLive {
+            // A plain `codex` has no resume ID in argv. Use the same conservative
+            // folder/title match as the switcher before creating another viewer.
+            let sessions = codex.collect(days: 0)
+            guard codex.historyAvailable else { throw CCSError.message("Couldn’t verify existing Codex tabs. Refresh and try again.") }
+            let context = try terminalSwitchContext(sessions: sessions)
+            if let target = context.targets.first(where: { $0.session.key == current.key }) {
+                let focus = try runner("/usr/bin/osascript", ["-", current.terminalTitle, target.tab.tty], Self.focusScript, 5)
+                guard focus.code == 0, focus.out.trimmingCharacters(in: .whitespacesAndNewlines) == "ok" else {
+                    throw CCSError.message("Couldn’t focus that Terminal tab. Refresh and try again.")
+                }
+                return
+            }
+        }
+        try openTerminal(codex.resumeCommand(current), title: current.terminalTitle)
     }
 
-    public func openTerminal(_ command: String) throws {
-        let result = try runner("/usr/bin/osascript", ["-", command], Self.launchScript, 15)
+    public func openTerminal(_ command: String, title: String = "") throws {
+        let result = try runner("/usr/bin/osascript", ["-", cleanText(title), command], Self.launchScript, 15)
         if result.code != 0 {
             throw CCSError.message(result.err.trimmingCharacters(in: .whitespacesAndNewlines).nonempty ?? "Could not open Terminal.app. Allow CCS in System Settings → Privacy & Security → Automation.")
         }
@@ -140,18 +167,33 @@ public final class SessionService {
         var unique = Set<String>()
         return viewers.filter { !$0.isEmpty && $0 != "??" && unique.insert($0).inserted }
     }
+    // Keep cosmetic errors inside this handler: a successful focus or launch
+    // must never become a failed action (or trigger a duplicate launch).
+    static let titleScript = """
+    on nameTab(targetTab, newTitle)
+      try
+        if newTitle is "" then return
+        tell application "Terminal"
+          considering case, diacriticals
+            if custom title of targetTab is not newTitle then set custom title of targetTab to newTitle
+          end considering
+        end tell
+      end try
+    end nameTab
+    """
     public static let launchScript = """
     on run argv
       tell application "Terminal"
-        do script (item 1 of argv)
+        set openedTab to do script (item 2 of argv)
+        my nameTab(openedTab, item 1 of argv)
         activate
       end tell
     end run
-    """
+    """ + "\n" + titleScript
     public static let focusScript = """
     on run argv
       tell application "Terminal"
-        repeat with candidate in argv
+        repeat with candidate in items 2 thru -1 of argv
           set wanted to contents of candidate
           repeat with w in windows
             try
@@ -163,6 +205,7 @@ public final class SessionService {
               if tty of t is wanted then
                 set selected of t to true
                 set index of w to 1
+                my nameTab(t, item 1 of argv)
                 activate
                 return "ok"
               end if
@@ -172,7 +215,7 @@ public final class SessionService {
       end tell
       return "missing"
     end run
-    """
+    """ + "\n" + titleScript
 }
 
 // Enough shell tokenization to compare the first attach argument exactly,

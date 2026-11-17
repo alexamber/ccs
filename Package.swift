@@ -13,6 +13,7 @@ let package = Package(
         .target(name: "CTerminal", cSettings: [.define("NCURSES_WIDECHAR", to: "1")], linkerSettings: [.linkedLibrary("ncurses")]),
         .executableTarget(name: "CCSCLI", dependencies: ["CCSCore", "CTerminal"]),
         .executableTarget(name: "CCSApp", dependencies: ["CCSCore"],
+                          resources: [.process("Resources")],
                           linkerSettings: [.linkedFramework("Carbon")]),
         .testTarget(name: "CCSCoreTests", dependencies: ["CCSCore"]),
         .testTarget(name: "CCSAppTests", dependencies: ["CCSApp"]),

@@ -47,6 +47,7 @@ select a row or double-click to open it.
 
 | Shortcut | Action |
 | --- | --- |
+| Option-Tab / Option-Shift-Tab | Cycle active Terminal sessions; release Option to focus |
 | Option-Space while open, or Cmd-N | New dated session using the remembered provider |
 | Cmd-Shift-N | Choose the provider for new sessions |
 | Cmd-1 / Cmd-2 / Cmd-3 | All / Claude / Codex filter |
@@ -70,6 +71,87 @@ macOS requests Automation permission when CCS first controls Terminal. Allow it
 in System Settings → Privacy & Security → Automation. Browsing does not require
 Terminal automation. Missing commands are reported before creating a dated folder.
 Claude resume is disabled when its live status cannot be verified.
+
+## Terminal session labels
+
+Opening or focusing a session through CCS sets its native Terminal tab title to
+the saved session topic. Untitled sessions use the folder name; new and fresh
+sessions start with the folder name. Titles update on the next CCS open/focus
+action, which also replaces any title you set by hand. Naming failures do not
+block a successful launch or focus. Browsing, exports, and picker refreshes do
+not rename tabs.
+
+For a brief popup when switching tabs directly in Terminal, enable Settings →
+**Show session on Terminal tab switch**. An oval at the upper-right of the Terminal
+window shows the session name for about 2.5 seconds, then shrinks to a small unicorn
+bubble. Hover pauses shrinking. Click either bubble to expand a searchable file
+selector with the session name, folder, provider, and status. The expanded selector
+takes keyboard focus; clicking away, Escape, or opening a file collapses it.
+The unicorn stays visible during a smooth 180 ms size-and-corner transition.
+The expanded view fits up to five file rows, scrolling for more. The small bubble
+remains available across apps on the same desktop for the last identified session;
+it does not follow you to other Spaces. Click its unicorn
+to expand or collapse. A monochrome unicorn also identifies CCS in the menu bar.
+**Open session picker…** opens its files in the full picker. The option is off by default and requires CCS to remain
+running in the menu bar. It uses the existing Terminal Automation permission;
+Accessibility permission is not needed.
+
+While enabled, CCS checks the selected tab about every quarter-second only while
+Terminal is frontmost. It reuses session metadata for up to ten seconds, with
+a fresh process check on each tab/topic change and a metadata refresh on a miss.
+Unmatched tabs are retried at five-second intervals while Terminal is frontmost.
+Unknown or ambiguous tabs produce no popup. Claude
+sessions can be started outside CCS. Codex matches explicit `codex resume ID`
+processes; plain local `codex` sessions also match when the process's working
+directory and native tab title identify exactly one live conversation. Custom
+titles, unavailable live metadata, unsupported launch options, or ambiguous names
+can prevent that fallback. It supports the popup, Option-Tab, and focusing an
+existing tab from the normal picker;
+it never authorizes launching or resuming a process. Switching quickly can skip
+intermediate tabs. Popups never rename tabs or open a session.
+
+**Option-Tab** opens a compact unicorn switcher listing only sessions matched to
+existing Terminal tabs, across enabled providers. It appears immediately, using
+recent results as a preview while refreshing in the background. Selection waits
+for the current tab to be checked, then stays fixed for that gesture. Hold Option and tap Tab to
+cycle, add Shift to move backward, and release Option to focus the highlighted tab.
+Escape cancels. Each conversation appears once, even if multiple tabs share its
+session ID; different conversations in the same folder remain separate. This view does not scan folders or show artifacts; Option-Space
+opens the full picker with files. CCS remembers recently chosen sessions for quick switching back. Each
+focus rechecks the tab; an ended session is never resumed by this shortcut. These
+shortcuts use native hotkey registration and need no Accessibility permission.
+
+## Nearby reports and documents
+
+The native picker shows **Files in this folder** beside the selected session.
+Move through sessions to browse their files; press Right to enter the file list,
+Return to open a file, and Left to return to sessions. Clicks open files in their
+default app. The sidebar also has a file-name filter.
+
+Files are discovered automatically in the session folder and two levels of
+subfolders. HTML, PDF, Markdown, text, Office documents, and CSV are supported.
+Recent files, report-like names, and files opened through CCS rank higher.
+Sessions in the same folder share the list; it does not claim which session wrote
+a file. Updates to a report keep the same path and open its latest contents.
+
+Discovery skips hidden folders, symlinks, app packages, common source/build/cache
+folders, and housekeeping files such as README and AGENTS. Scans are bounded and
+run only when a file list is requested or visible; the visible list refreshes
+about every five seconds. CCS reads file metadata, not document contents. Opening
+history is stored locally in `~/.cache/ccs/artifact-usage-v1.json`. This first version
+does not discover references outside the session folder.
+
+Automatic discovery does not scan the home directory or its parent directories,
+privacy-protected folders (Desktop, Documents, Downloads, Library, Pictures, Music,
+Movies), system folders, or external/network volumes. These roots are rejected
+before enumeration; protected subdirectories are skipped before metadata reads.
+This avoids discovery-triggered access prompts for these known locations; custom
+mounts and other macOS-protected locations may still require permission. Reports in ordinary
+project folders, such as `~/git` and `~/ccs-sessions`, remain available.
+
+Terminal's profile controls whether process names accompany a custom title.
+To display just the title, turn off **Show other items when there is a custom
+title** under Terminal → Settings → Profiles → Tab.
 
 ## Choose providers
 

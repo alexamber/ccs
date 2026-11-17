@@ -4,6 +4,7 @@ import CCSCore
 final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
     let panel: PickerPanel
     let engine: Engine
+    let artifactBrowser: ArtifactBrowser
     var settings: Settings
     var onSettings: (() -> Void)?
     var onSave: ((Settings) throws -> Void)?
@@ -13,13 +14,15 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     private let providers = NSSegmentedControl(labels: ProviderFilter.allCases.map(\.title), trackingMode: .selectOne, target: nil, action: nil)
     private let newProvider = NSPopUpButton()
     private let newProviderValue = NSTextField(labelWithString: "")
-    private let keys = NSTextField(labelWithString: "↵ Open   ⇧↵ New here   ⌃⇥ View   ⌘N New   Esc Close")
+    private let keys = NSTextField(labelWithString: "↵ Open   → Files   ⇧↵ New here   ⌃⇥ View   ⌘N New   Esc Close")
     private let shortcuts = NSButton(title: "Shortcuts", target: nil, action: nil)
     private var shortcutsPopover: NSPopover?
     private let count = NSTextField(labelWithString: ""), message = NSTextField(labelWithString: "")
     private let empty = NSTextField(labelWithString: "Loading sessions…")
     private var sessions = [Session](), rows = [SessionRow](), timer: Timer?, monitor: Any?
     private var generation = 0, loading = false, asking = false
+    private var reloading = false
+    private var wantsFileFocus = false
     private var hasLoaded = false
     private var refreshError: String?
     private let loadHistory: (@escaping (Result<HistorySnapshot, Error>) -> Void) -> Void
@@ -28,11 +31,13 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     private var previousApplication: NSRunningApplication?
     private var days: Int, recent: Bool
     init(engine: Engine, settings: Settings,
-         loadHistory: ((@escaping (Result<HistorySnapshot, Error>) -> Void) -> Void)? = nil) {
+         loadHistory: ((@escaping (Result<HistorySnapshot, Error>) -> Void) -> Void)? = nil,
+         artifactBrowser: ArtifactBrowser? = nil) {
         self.engine = engine; self.settings = settings
+        self.artifactBrowser = artifactBrowser ?? ArtifactBrowser()
         self.loadHistory = loadHistory ?? engine.loadHistory
         days = settings.defaultDays; recent = !settings.folders
-        panel = PickerPanel(contentRect: NSRect(x: 0, y: 0, width: 700, height: 470), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel = PickerPanel(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 560), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         super.init()
         panel.autorecalculatesKeyViewLoop = true
         panel.delegate = self; panel.isReleasedWhenClosed = false
@@ -45,10 +50,10 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         panel.contentView = background
         let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false; background.addSubview(stack)
-        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -16),
-            stack.topAnchor.constraint(equalTo: background.topAnchor, constant: 16),
-            stack.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -12)])
+        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -20),
+            stack.topAnchor.constraint(equalTo: background.topAnchor, constant: 20),
+            stack.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -16)])
         search.placeholderString = "Search Claude and Codex sessions"; search.font = .systemFont(ofSize: 17)
         search.delegate = self; search.sendsSearchStringImmediately = true
         search.setAccessibilityLabel("Search sessions")
@@ -64,16 +69,50 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         providers.setAccessibilityLabel("Session provider"); providers.toolTip = "⌘1 All · ⌘2 Claude · ⌘3 Codex"
         count.font = .systemFont(ofSize: 11); count.textColor = .secondaryLabelColor
         bar.addArrangedSubview(views); bar.addArrangedSubview(providers); bar.addArrangedSubview(ranges)
-        let spacer = NSView(); spacer.setContentHuggingPriority(.defaultLow, for: .horizontal); bar.addArrangedSubview(spacer); bar.addArrangedSubview(count)
-        stack.addArrangedSubview(bar); bar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        let spacer = NSView(); spacer.setContentHuggingPriority(.defaultLow, for: .horizontal); bar.addArrangedSubview(spacer)
+        for control in [views, providers, ranges] { control.controlSize = .small; control.font = .systemFont(ofSize: 11) }
+        bar.spacing = 8
         table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("session")))
         table.headerView = nil; table.backgroundColor = .clear; table.style = .fullWidth
         table.dataSource = self; table.delegate = self; table.target = self; table.doubleAction = #selector(clicked)
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle; table.intercellSpacing = NSSize(width: 0, height: 2)
         table.setAccessibilityLabel("Claude Code and Codex sessions")
         scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.drawsBackground = false
-        stack.addArrangedSubview(scroll); scroll.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 240).isActive = true
+        let sectionTitle = NSTextField(labelWithString: "Sessions")
+        sectionTitle.font = .systemFont(ofSize: 12, weight: .semibold)
+        let headingSpace = NSView(); headingSpace.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let sectionHeading = NSStackView(views: [sectionTitle, count, headingSpace]); sectionHeading.spacing = 8
+        sectionTitle.setContentHuggingPriority(.required, for: .horizontal)
+        count.setContentHuggingPriority(.required, for: .horizontal)
+        let header = NSView()
+        for view in [sectionHeading, bar] {
+            view.translatesAutoresizingMaskIntoConstraints = false; header.addSubview(view)
+            view.leadingAnchor.constraint(equalTo: header.leadingAnchor).isActive = true
+            view.trailingAnchor.constraint(equalTo: header.trailingAnchor).isActive = true
+        }
+        NSLayoutConstraint.activate([header.heightAnchor.constraint(equalToConstant: 44),
+            sectionHeading.topAnchor.constraint(equalTo: header.topAnchor), bar.bottomAnchor.constraint(equalTo: header.bottomAnchor)])
+        let navigation = NSTextField(labelWithString: "↑ ↓ Select session · ↵ Open · → Files")
+        navigation.font = .systemFont(ofSize: 11); navigation.textColor = .secondaryLabelColor
+        let left = NSStackView(views: [header, scroll, navigation]); left.orientation = .vertical; left.alignment = .leading; left.spacing = 8
+        header.widthAnchor.constraint(equalTo: left.widthAnchor).isActive = true
+        scroll.widthAnchor.constraint(equalTo: left.widthAnchor).isActive = true
+        let divider = NSBox(); divider.boxType = .separator
+        divider.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        let body = NSStackView(views: [left, divider, self.artifactBrowser]); body.orientation = .horizontal; body.alignment = .top; body.spacing = 16
+        stack.addArrangedSubview(body); body.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        body.heightAnchor.constraint(greaterThanOrEqualToConstant: 280).isActive = true
+        left.heightAnchor.constraint(equalTo: body.heightAnchor).isActive = true
+        divider.heightAnchor.constraint(equalTo: body.heightAnchor).isActive = true
+        scroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 340).isActive = true
+        self.artifactBrowser.widthAnchor.constraint(equalToConstant: 320).isActive = true
+        self.artifactBrowser.heightAnchor.constraint(equalTo: body.heightAnchor).isActive = true
+        self.artifactBrowser.onBack = { [weak self] in guard let self else { return }; self.panel.makeFirstResponder(self.table) }
+        self.artifactBrowser.onOpened = { [weak self] in self?.hide(restoreFocus: false) }
+        self.artifactBrowser.onLoaded = { [weak self] _ in
+            guard let self, self.wantsFileFocus else { return }
+            self.wantsFileFocus = false; _ = self.artifactBrowser.focusFiles()
+        }
         empty.textColor = .secondaryLabelColor; empty.font = .systemFont(ofSize: 13)
         empty.translatesAutoresizingMaskIntoConstraints = false; scroll.addSubview(empty)
         NSLayoutConstraint.activate([empty.centerXAnchor.constraint(equalTo: scroll.centerXAnchor), empty.centerYAnchor.constraint(equalTo: scroll.centerYAnchor)])
@@ -96,9 +135,13 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         shortcuts.isBordered = false; shortcuts.font = .systemFont(ofSize: 10)
         shortcuts.contentTintColor = .secondaryLabelColor
         shortcuts.toolTip = "All keyboard shortcuts (⌘/)"; shortcuts.setAccessibilityLabel("Keyboard shortcuts")
-        footer.addArrangedSubview(shortcuts)
+        let footerSpace = NSView(); footerSpace.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        footer.addArrangedSubview(footerSpace); footer.addArrangedSubview(shortcuts)
         let gear = NSButton(image: NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Settings")!, target: self, action: #selector(settingsClicked)); gear.isBordered = false; gear.toolTip = "Settings (⌘,)"
-        footer.addArrangedSubview(gear); stack.addArrangedSubview(footer)
+        footer.addArrangedSubview(gear)
+        let footerDivider = NSBox(); footerDivider.boxType = .separator
+        stack.addArrangedSubview(footerDivider); footerDivider.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        stack.addArrangedSubview(footer); footer.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.panel.isVisible, !self.asking else { return event }
             if self.shortcutsPopover?.isShown == true {
@@ -147,12 +190,16 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         search.stringValue = ""; reload()
         let point = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(point, $0.frame, false) } ?? NSScreen.main ?? NSScreen.screens[0]
-        let f = screen.visibleFrame, size = panel.frame.size
-        panel.setFrameOrigin(NSPoint(x: f.midX - size.width / 2, y: f.maxY - f.height * 0.18 - size.height))
+        let f = screen.visibleFrame
+        panel.setContentSize(NSSize(width: min(1000, f.width - 32), height: min(560, f.height - 50)))
+        let size = panel.frame.size
+        panel.setFrameOrigin(NSPoint(x: f.midX - size.width / 2,
+                                     y: max(f.minY + 16, f.maxY - f.height * 0.18 - size.height)))
         let front = NSWorkspace.shared.frontmostApplication
         previousApplication = front?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : front
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil); panel.makeFirstResponder(search)
+        artifactBrowser.show(folder: selected?.cwd, refresh: true)
         refresh()
         timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refresh() }
     }
@@ -161,11 +208,24 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         let wasActive = NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier
         shortcutsPopover?.close()
         panel.orderOut(nil); timer?.invalidate(); timer = nil
+        artifactBrowser.cancel()
         if restoreFocus && wasActive {
             if let previousApplication { previousApplication.activate(options: []) }
             else { NSApp.hide(nil) }
         }
         previousApplication = nil
+        wantsFileFocus = false
+    }
+    func showFiles(for session: Session) {
+        if !sessions.contains(where: { $0.key == session.key }) { sessions.append(session) }
+        if !settings.providerFilter.includes(session.provider) {
+            settings.providerFilter = ProviderFilter(rawValue: session.provider.rawValue) ?? .all
+            providers.selectedSegment = ProviderFilter.allCases.firstIndex(of: settings.providerFilter) ?? 0
+        }
+        show(); search.stringValue = ""; reload()
+        if let row = rows.firstIndex(where: { $0.session?.key == session.key }) { select(row) }
+        wantsFileFocus = true
+        artifactBrowser.show(folder: session.cwd, refresh: true)
     }
     func owns(_ window: NSWindow) -> Bool {
         window === panel || window === shortcutsPopover?.contentViewController?.view.window
@@ -191,9 +251,12 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
             }
             // Finishing while hidden still warms the next opening.
             self.reload()
+            if self.panel.isVisible { self.artifactBrowser.show(folder: self.selected?.cwd, refresh: true) }
         }
     }
     func reload() {
+        reloading = true
+        defer { reloading = false; if panel.isVisible { artifactBrowser.show(folder: selected?.cwd) } }
         let keep = selected?.key
         let cutoff = days == 0 ? 0 : Date().timeIntervalSince1970 - Double(days) * 86400
         rows = sessionRows(sessions.filter { settings.enabledProviders.contains($0.provider) && settings.providerFilter.includes($0.provider) && ($0.isLive || $0.mtime >= cutoff) }, query: search.stringValue, recent: recent, tree: false)
@@ -231,6 +294,8 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         case 36, 76: activateSelected(fresh: event.modifierFlags.contains(.shift))
         case 125: move(1)
         case 126: move(-1)
+        case 124 where !command && !control && !event.modifierFlags.contains(.option) && navigatingSessions:
+            return artifactBrowser.focusFiles()
         case 121: move(10)
         case 116: move(-10)
         case 115: move(-rows.count)
@@ -276,10 +341,12 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         guard panel.isVisible else { return }
         var reference: [(String, String)] = [
             (settings.hotkeyLabel, "Open picker; press again for a new dated session"),
+            ("⌥Tab / ⌥⇧Tab", "Cycle active Terminal sessions; release Option to switch"),
             ("↑ / ↓", "Select session in search or list"),
             ("Page Up / Down", "Move ten sessions"),
             ("Home / End", "First / last session"),
             ("↵", "Open selected session"),
+            ("→ / ←", "Move between sessions and folder files"),
             ("⇧↵", "Start clean in the selected folder"),
             ("⌃⇥", "Switch Recent / Folders"),
             ("⇥ / ⇧⇥", "Move keyboard focus"),
@@ -344,9 +411,12 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         }
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        if !reloading, panel.isVisible { artifactBrowser.show(folder: selected?.cwd) }
+    }
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { rows[row].session != nil }
     func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { rows[row].session == nil }
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { rows[row].session == nil ? 26 : 46 }
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { rows[row].session == nil ? 26 : 48 }
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { PickerRow() }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         if let s = rows[row].session { return SessionCell(session: s, recent: recent) }

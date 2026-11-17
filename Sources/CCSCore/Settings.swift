@@ -23,10 +23,16 @@ public struct Settings: Codable, Equatable {
     private var storedNewProvider: Provider?
     private var storedProviderFilter: ProviderFilter?
     private var storedEnabledProviders: [Provider]?
+    private var storedTerminalPopups: Bool?
     private enum CodingKeys: String, CodingKey {
         case defaultDays, folders, newDirectory, cleanup, hotkeyCode, hotkeyModifiers, hotkeyLabel
         case storedNewProvider = "newProvider", storedProviderFilter = "providerFilter"
         case storedEnabledProviders = "enabledProviders"
+        case storedTerminalPopups = "terminalPopups"
+    }
+    public var terminalPopups: Bool {
+        get { storedTerminalPopups ?? false }
+        set { storedTerminalPopups = newValue }
     }
     public var newProvider: Provider {
         get { storedNewProvider ?? .claude }

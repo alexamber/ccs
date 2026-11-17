@@ -34,6 +34,7 @@ if [ "$app_only" != --app-only ]; then
 fi
 cp macOS/Info.plist "$app/Contents/Info.plist"
 cp LICENSE "$app/Contents/Resources/LICENSE"
+cp Sources/CCSApp/Resources/Unicorn.png Sources/CCSApp/Resources/UnicornTemplate.png "$app/Contents/Resources/"
 if [ -n "${CCS_DONATION_URL:-}" ]; then
     case "$CCS_DONATION_URL" in https://*) ;; *) printf 'CCS_DONATION_URL must use HTTPS.\n' >&2; exit 2 ;; esac
     /usr/bin/plutil -insert CCSDonationURL -string "$CCS_DONATION_URL" "$app/Contents/Info.plist"
