@@ -1,8 +1,8 @@
 import AppKit
 import CCSCore
 
-/// Cached rows are a preview only. Resolve the current tab before selecting or
-/// committing; then freeze the list for the remainder of this gesture.
+/// Cached rows respond to keys as a preview. Resolve the current tab before
+/// committing, then freeze the list for the remainder of this gesture.
 final class SessionSwitcher: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
     let panel = PickerPanel(contentRect: NSRect(x: 0, y: 0, width: 400, height: 130), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     private let table = NSTableView(), scroll = NSScrollView()
@@ -15,7 +15,8 @@ final class SessionSwitcher: NSObject, NSWindowDelegate, NSTableViewDataSource, 
     private var held: () -> Bool = { NSEvent.modifierFlags.contains(.option) }
     private var previousApplication: NSRunningApplication?
     var onCommit: ((TerminalSwitchTarget, [Session]) -> Void)?
-    var selected: TerminalSwitchTarget? { ready && targets.indices.contains(table.selectedRow) ? targets[table.selectedRow] : nil }
+    var highlighted: TerminalSwitchTarget? { targets.indices.contains(table.selectedRow) ? targets[table.selectedRow] : nil }
+    var selected: TerminalSwitchTarget? { ready ? highlighted : nil }
 
     override init() {
         super.init()
@@ -64,7 +65,9 @@ final class SessionSwitcher: NSObject, NSWindowDelegate, NSTableViewDataSource, 
         self.targets = targets; steps = step; held = optionHeld
         previousApplication = NSWorkspace.shared.frontmostApplication
         message.stringValue = "Finding active Terminal sessions…"; message.isHidden = !targets.isEmpty
-        table.reloadData(); table.deselectAll(nil); resize()
+        table.reloadData(); table.deselectAll(nil)
+        if !targets.isEmpty { select(step >= 0 ? step - 1 : step) }
+        resize()
         NSApp.activate(ignoringOtherApps: true); panel.makeKeyAndOrderFront(nil); panel.makeFirstResponder(table)
         timer?.invalidate()
         timer = Timer(timeInterval: 0.04, repeats: true) { [weak self] _ in
@@ -89,7 +92,8 @@ final class SessionSwitcher: NSObject, NSWindowDelegate, NSTableViewDataSource, 
         targets = []; table.reloadData(); message.isHidden = false; message.stringValue = text; resize()
     }
     func cycle(_ delta: Int) {
-        if !ready || targets.isEmpty { steps += delta; return }
+        if !ready { steps += delta }
+        guard !targets.isEmpty else { return }
         select(max(0, table.selectedRow) + delta)
     }
     private func select(_ value: Int) {

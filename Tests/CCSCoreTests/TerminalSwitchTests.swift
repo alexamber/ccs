@@ -152,6 +152,20 @@ final class TerminalSwitchTests: XCTestCase {
         XCTAssertTrue(try service.terminalSwitchContext(sessions: [session]).targets.allSatisfy { $0.session == nil })
     }
 
+    func testCachedSocketIdentityMatchesRemoteClientWithoutOpeningMetadataConnection() throws {
+        var session = Session(id: "abc", cwd: "/tmp/work", title: "Topic", provider: .codex)
+        session.status = "idle"
+        let service = SessionService(runner: { path, _, script, _ in
+            if path == "/bin/ps" { return CommandResult(out: "123 1 ttys001 codex") }
+            if path == "/usr/sbin/lsof" { return CommandResult(out: "n/tmp/work") }
+            XCTAssertEqual(script, SessionService.switchTabsScript)
+            return CommandResult(out: "\u{1e}/dev/ttys001\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}Topic")
+        }, codex: CodexProvider(connector: { XCTFail("Tab enumeration must not connect to the provider"); throw CCSError.message("unexpected") }),
+           arguments: { _ in ["codex", "--remote", "unix:///tmp/socket", "resume", "abc"] })
+        XCTAssertEqual(try service.terminalSwitchContext(sessions: [session], codexSocketPath: "/tmp/socket").targets.first?.session?.key, session.key)
+        XCTAssertNil(try service.terminalSwitchContext(sessions: [session], codexSocketPath: "/tmp/other").targets.first?.session)
+    }
+
     func testSwitchAppleScriptCompiles() throws {
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".scpt")
         defer { try? FileManager.default.removeItem(at: path) }

@@ -22,11 +22,11 @@ public struct TerminalSwitchContext {
 }
 
 extension SessionService {
-    public func terminalSwitchContext(sessions: [Session], includeUnconfirmedCodex: Bool = true) throws -> TerminalSwitchContext {
-        try terminalSwitchContext(sessions: sessions, includeUnconfirmedCodex: includeUnconfirmedCodex, onlyTTY: nil)
+    public func terminalSwitchContext(sessions: [Session], includeUnconfirmedCodex: Bool = true, codexSocketPath: String? = nil) throws -> TerminalSwitchContext {
+        try terminalSwitchContext(sessions: sessions, includeUnconfirmedCodex: includeUnconfirmedCodex, onlyTTY: nil, codexSocketPath: codexSocketPath)
     }
 
-    private func terminalSwitchContext(sessions: [Session], includeUnconfirmedCodex: Bool, onlyTTY: String?) throws -> TerminalSwitchContext {
+    private func terminalSwitchContext(sessions: [Session], includeUnconfirmedCodex: Bool, onlyTTY: String?, codexSocketPath: String? = nil) throws -> TerminalSwitchContext {
         let result = try runner("/usr/bin/osascript", ["-"], Self.switchTabsScript, 3)
         guard result.code == 0 else { throw CCSError.message("Couldn’t read Terminal tabs. Check CCS’s Terminal Automation permission.") }
         let parts = result.out.components(separatedBy: "\u{1e}")
@@ -43,7 +43,7 @@ extension SessionService {
             let fields = record.components(separatedBy: "\u{1f}")
             guard fields.count == 6, let tab = TerminalTabSnapshot(output: fields.joined(separator: "\n")),
                   onlyTTY == nil || tab.tty == onlyTTY else { continue }
-            let session = terminalSession(tty: tab.tty, title: tab.title, sessions: live, processList: processes.out)
+            let session = terminalSession(tty: tab.tty, title: tab.title, sessions: live, processList: processes.out, codexSocketPath: codexSocketPath)
             let process = CodexProvider.terminalProcess(tty: String(tab.tty.dropFirst(5)), processList: processes.out, arguments: processArguments)
             guard session != nil || (includeUnconfirmedCodex && process != nil) else { continue }
             let target = TerminalSwitchTarget(session: session, tab: tab, processID: process?.pid)

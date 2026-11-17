@@ -151,11 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         popup.hide(restoreFocus: false); terminalPopup.hide()
         let presentation = sessionSwitcher.show(targets: cached, step: step)
         let enabled = settings.enabledProviders
-        engine.perform(background: true, { service, _ in
-            // A session started since the picker last opened must be switchable.
-            let sessions = try service.collect(days: 0, provider: .all, enabledProviders: enabled)
-            return try service.terminalSwitchContext(sessions: sessions, includeUnconfirmedCodex: enabled.contains(.codex))
-        }) { [weak self] result in
+        engine.loadSwitchContext(enabledProviders: enabled) { [weak self] result in
             guard let self, self.sessionSwitcher.presentation == presentation else { return }
             do {
                 let context = try result.get()

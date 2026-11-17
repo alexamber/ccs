@@ -47,6 +47,24 @@ final class SessionSwitchTests: XCTestCase {
         popup.hide()
         XCTAssertEqual(committed, ["c"], "Dismissal cancels a pending switch")
     }
+    func testCachedRowsReactToEveryKeyBeforeVerificationButCannotCommit() {
+        _ = NSApplication.shared
+        let popup = SessionSwitcher(), targets = targets()
+        var commits = 0
+        popup.onCommit = { _, _ in commits += 1 }
+        let request = popup.show(targets: targets, step: 1, optionHeld: { true })
+        XCTAssertEqual(popup.highlighted?.key, targets[0].key)
+        popup.cycle(1)
+        XCTAssertEqual(popup.highlighted?.key, targets[1].key)
+        popup.cycle(-1)
+        XCTAssertEqual(popup.highlighted?.key, targets[0].key)
+        XCTAssertNil(popup.selected)
+        popup.commit(); XCTAssertEqual(commits, 0)
+        popup.supply(targets, currentKey: targets[1].key, presentation: request)
+        XCTAssertEqual(popup.selected?.key, targets[2].key, "Fresh current tab plus the accumulated keys determines the actual target")
+        popup.cycle(1); XCTAssertEqual(popup.selected?.key, targets[0].key)
+        popup.commit(); XCTAssertEqual(commits, 1)
+    }
     func testGenericTabCanCommitWithoutInventingAConversation() {
         _ = NSApplication.shared
         let popup = SessionSwitcher()

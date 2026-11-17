@@ -49,7 +49,7 @@ extension SessionService {
     public func session(inTerminalTab tab: TerminalTabSnapshot, sessions: [Session]) -> Session? {
         terminalSession(tty: tab.tty, title: tab.title, sessions: sessions)
     }
-    func terminalSession(tty: String, title: String, sessions: [Session], processList: String? = nil) -> Session? {
+    func terminalSession(tty: String, title: String, sessions: [Session], processList: String? = nil, codexSocketPath: String? = nil) -> Session? {
         // A switcher enumeration shares one process snapshot across all tabs.
         let listing: String
         if let processList { listing = processList }
@@ -88,7 +88,7 @@ extension SessionService {
             $0.provider == .codex && $0.isLive && CodexProvider.terminalTitle(title, matches: $0.title)
         }
         // Generic tab focus requires no folder inspection or metadata lookup.
-        guard !topics.isEmpty, let process, process.canMatchSession(localSocketPath: codex.sharedSocketPath),
+        guard !topics.isEmpty, let process, process.canMatchSession(localSocketPath: codexSocketPath ?? codex.sharedSocketPath),
               let cwdResult = try? runner("/usr/sbin/lsof", ["-a", "-p", String(process.pid), "-d", "cwd", "-Fn"], nil, 3), cwdResult.code == 0 else { return nil }
         let paths = cwdResult.out.split(separator: "\n").filter { $0.hasPrefix("n/") }.map { String($0.dropFirst()) }
         guard paths.count == 1 else { return nil }

@@ -7,7 +7,7 @@ public final class CodexProvider {
     private var connection: CodexConnection?
     private let connector: (() throws -> CodexConnection)?
     private var socketPath: String?
-    var sharedSocketPath: String? { socketPath }
+    public var sharedSocketPath: String? { socketPath }
     private var lastSharedProbe = Date.distantPast
     public private(set) var issue: String?
     public private(set) var historyAvailable = true
@@ -63,7 +63,7 @@ public final class CodexProvider {
             let parsed = try records.map { try Self.session($0, authoritative: client.isShared) }
             let sessions = Dictionary(parsed.map { ($0.id, $0) }, uniquingKeysWith: { a, b in a.mtime >= b.mtime ? a : b }).values
             historyAvailable = true
-            issue = client.isShared ? nil : "Codex live status unavailable; Enter opens saved history through Codex."
+            issue = client.isShared ? nil : "Codex live status unavailable; resume directly in Codex."
             return sessions.filter { $0.isLive || $0.mtime >= cutoff }.sorted { $0.mtime == $1.mtime ? $0.key < $1.key : $0.mtime > $1.mtime }
         } catch {
             invalidate(); historyAvailable = false; issue = "Codex history unavailable. Check that Codex is installed, then refresh."

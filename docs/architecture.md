@@ -81,8 +81,13 @@ check alone is not sufficient to prevent macOS folder-access prompts.
 
 Option-Tab and Option-Shift-Tab have distinct Carbon hotkey IDs, dispatched only to
 their owning handler. On each gesture, Terminal tab enumeration is matched against
-live sessions. A dedicated compact `SessionSwitcher` appears immediately, reusing
-targets for up to 30 seconds as a nonselectable preview while a new snapshot loads.
+the latest completed session metadata. A dedicated user-initiated queue inspects
+Terminal tabs without waiting for history refreshes or other actions. Stale labels
+refresh on the history lane for the next gesture; an empty cold-start result retries
+once after history arrives. Requests share an in-flight history refresh, and new
+gestures cancel queued obsolete tab reads. A compact `SessionSwitcher` appears
+immediately, reusing targets for up to 30 seconds. Cached rows react visually to
+keys while tab verification is pending, but cannot commit until it completes.
 Each presentation has a generation token; old callbacks cannot populate a reopened
 switcher. The fresh current tab determines the initial selection, even with popups off. It does not instantiate
 an artifact browser. The candidate list stays fixed while cycling; a 40 ms modifier check

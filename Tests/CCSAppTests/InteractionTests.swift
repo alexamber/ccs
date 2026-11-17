@@ -68,6 +68,46 @@ final class InteractionTests: XCTestCase {
         XCTAssertTrue(popup.panel.firstResponder === control)
     }
 
+    func testSwitcherDoesNotWaitForHistoryOrActionQueueAndDoesNotCollectHistory() {
+        let release = DispatchSemaphore(value: 0)
+        let started = expectation(description: "slow lanes blocked"); started.expectedFulfillmentCount = 2
+        let loaded = expectation(description: "switcher completed independently")
+        let refreshed = expectation(description: "optional refresh completed")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let engine = Engine(environment: { [:] }, makeService: { _ in
+            SessionService(index: SessionIndex(projects: root.appendingPathComponent("missing"), cache: root.appendingPathComponent("cache")), runner: { path, _, script, _ in
+                if path == "/usr/bin/env" { return CommandResult(out: "[{\"sessionId\":\"claude-session\",\"pid\":124,\"cwd\":\"/tmp/project\"}]") }
+                if path == "/bin/ps" { return CommandResult(out: "123 1 ttys001 codex\n124 1 ttys002 claude") }
+                XCTAssertEqual(script, SessionService.switchTabsScript, "Switching must not invoke provider history or live-status commands")
+                return CommandResult(out: "/dev/ttys001\u{1e}/dev/ttys001\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}Topic\u{1e}/dev/ttys002\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}Claude")
+            }, codex: CodexProvider(enabled: false), arguments: { [$0 == 123 ? "codex" : "claude"] })
+        })
+        let seeded = expectation(description: "metadata cached")
+        engine.perform(background: true, { service, _ in
+            try service.collect(days: 0, provider: .all, enabledProviders: [.claude])
+        }) { _ in seeded.fulfill() }
+        wait(for: [seeded], timeout: 2)
+        for background in [true, false] {
+            engine.perform(background: background, { _, _ in
+                started.fulfill(); _ = release.wait(timeout: .now() + 5)
+            }) { _ in }
+        }
+        wait(for: [started], timeout: 2)
+        // Keep the optional label refresh pending on the blocked history queue.
+        engine.loadHistory { _ in refreshed.fulfill() }
+        engine.loadSwitchContext(enabledProviders: [.claude, .codex]) { result in
+            let context = try? result.get()
+            XCTAssertEqual(context?.targets.count, 2)
+            XCTAssertEqual(context?.targets.first?.title, "Codex tab")
+            XCTAssertEqual(context?.targets.last?.session?.id, "claude-session", "The fast lane reuses completed metadata")
+            loaded.fulfill()
+        }
+        wait(for: [loaded], timeout: 1)
+        release.signal(); release.signal()
+        wait(for: [refreshed], timeout: 2)
+    }
+
     func testForegroundActionDoesNotWaitForBlockedHistoryRefresh() {
         let engine = Engine(environment: { ["PATH": "/usr/bin:/bin"] })
         let started = expectation(description: "history started"), opened = expectation(description: "foreground completed")

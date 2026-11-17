@@ -6,6 +6,7 @@ public final class SessionService {
     public let codex: CodexProvider
     private let arguments: (Int32) -> [String]?
     private var terminalSnapshot: (sessions: [Session], providers: [Provider], date: Date)?
+    public var cachedTerminalSessions: [Session]? { terminalSnapshot?.sessions }
     func processArguments(_ pid: Int32) -> [String]? { arguments(pid) }
     public private(set) var issues = [Provider: String]()
     public private(set) var historyFailures = Set<Provider>()
