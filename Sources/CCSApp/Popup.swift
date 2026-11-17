@@ -14,7 +14,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     private let providers = NSSegmentedControl(labels: ProviderFilter.allCases.map(\.title), trackingMode: .selectOne, target: nil, action: nil)
     private let newProvider = NSPopUpButton()
     private let newProviderValue = NSTextField(labelWithString: "")
-    private let keys = NSTextField(labelWithString: "↵ Open   → Files   ⇧↵ New here   ⌃⇥ View   ⌘N New   Esc Close")
+    private let keys = NSTextField(labelWithString: "⇧↵ New here   ⌃⇥ Recent / Folders   ⌘N New")
     private let shortcuts = NSButton(title: "Shortcuts", target: nil, action: nil)
     private var shortcutsPopover: NSPopover?
     private let count = NSTextField(labelWithString: ""), message = NSTextField(labelWithString: "")
@@ -59,9 +59,9 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         search.setAccessibilityLabel("Search sessions")
         stack.addArrangedSubview(search); search.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         let bar = NSStackView(); bar.spacing = 10
+        views.toolTip = "Recent: newest sessions first. Folders: group sessions by project folder. Switch with Control-Tab."
         views.target = self; views.action = #selector(changeView); views.selectedSegment = recent ? 0 : 1
         ranges.target = self; ranges.action = #selector(changeRange); ranges.selectedSegment = dateWindows.firstIndex(of: days) ?? 2
-        views.toolTip = "Control-Tab switches Recent / Folders"
         views.setAccessibilityLabel("Session grouping"); ranges.setAccessibilityLabel("Date range")
         providers.target = self; providers.action = #selector(changeProvider)
         providers.selectedSegment = ProviderFilter.allCases.firstIndex(of: settings.providerFilter) ?? 0
@@ -92,9 +92,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         }
         NSLayoutConstraint.activate([header.heightAnchor.constraint(equalToConstant: 44),
             sectionHeading.topAnchor.constraint(equalTo: header.topAnchor), bar.bottomAnchor.constraint(equalTo: header.bottomAnchor)])
-        let navigation = NSTextField(labelWithString: "↑ ↓ Select session · ↵ Open · → Files")
-        navigation.font = .systemFont(ofSize: 11); navigation.textColor = .secondaryLabelColor
-        let left = NSStackView(views: [header, scroll, navigation]); left.orientation = .vertical; left.alignment = .leading; left.spacing = 8
+        let left = NSStackView(views: [header, scroll]); left.orientation = .vertical; left.alignment = .leading; left.spacing = 8
         header.widthAnchor.constraint(equalTo: left.widthAnchor).isActive = true
         scroll.widthAnchor.constraint(equalTo: left.widthAnchor).isActive = true
         let divider = NSBox(); divider.boxType = .separator
@@ -341,7 +339,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         guard panel.isVisible else { return }
         var reference: [(String, String)] = [
             (settings.hotkeyLabel, "Open picker; press again for a new dated session"),
-            ("⌥Tab / ⌥⇧Tab", "Cycle active Terminal sessions; release Option to switch"),
+            ("⌥⇥ / ⌥⇧⇥", "Cycle active Terminal sessions; release Option to switch"),
             ("↑ / ↓", "Select session in search or list"),
             ("Page Up / Down", "Move ten sessions"),
             ("Home / End", "First / last session"),
@@ -356,7 +354,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         if settings.enabledProviders.count > 1 {
             reference += [("⌘1 / ⌘2 / ⌘3", "All / Claude / Codex filter"), ("⌘⇧N", "Choose provider for new sessions")]
         }
-        reference += [("⌘R", "Refresh sessions"), ("Esc", "Close picker or cancel dialog"),
+        reference += [("⌘R", "Refresh sessions"), ("⎋", "Close picker or cancel dialog"),
                       ("⌘,", "Settings"), ("⌘/", "Show / hide shortcuts"), ("⌘Q", "Quit CCS")]
         let title = NSTextField(labelWithString: "Keyboard shortcuts")
         title.font = .systemFont(ofSize: 13, weight: .semibold)

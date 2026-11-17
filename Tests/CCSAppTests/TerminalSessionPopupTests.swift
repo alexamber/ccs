@@ -169,7 +169,7 @@ final class TerminalSessionPopupTests: XCTestCase {
 
     func testPopupCannotStealFocusButAcceptsArtifactClicks() throws {
         _ = NSApplication.shared
-        let browser = ArtifactBrowser(showLocation: false, backHint: "Collapse", visibleRowLimit: 5, loader: { folder, done in
+        let browser = ArtifactBrowser(showLocation: false, visibleRowLimit: 5, loader: { folder, done in
             done(ArtifactSnapshot(files: ["Authentication report.html", "Architecture notes.md", "Test results.pdf"].map {
                 SessionArtifact(url: URL(fileURLWithPath: folder).appendingPathComponent($0), relativePath: $0, modifiedAt: Date())
             }))
@@ -211,6 +211,35 @@ final class TerminalSessionPopupTests: XCTestCase {
         popup.contextEnded(.disabled)
         XCTAssertFalse(popup.panel.isVisible)
         XCTAssertTrue(browser.files.count == 3)
+    }
+
+    func testClickDuringTitleAnimationImmediatelyOpensFiles() throws {
+        _ = NSApplication.shared
+        let popup = TerminalSessionPopup(artifactBrowser: ArtifactBrowser(showLocation: false, visibleRowLimit: 5, loader: { _, done in done(ArtifactSnapshot()) }))
+        defer { popup.hide() }
+        popup.show(Session(id: "a", cwd: "/tmp", title: "Topic"), tab: tab(1))
+        popup.collapse(restoreFocus: false); settle()
+        popup.show(Session(id: "b", cwd: "/tmp/other", title: "Other topic"), tab: tab(2))
+        let mark = try XCTUnwrap(popup.panel.contentView?.subviews.compactMap { $0 as? NSButton }.first { $0.image != nil })
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: mark.convert(NSPoint(x: 18, y: 18), to: nil), modifierFlags: [], timestamp: 0,
+                                                   windowNumber: popup.panel.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        XCTAssertTrue(mark.acceptsFirstMouse(for: event))
+        mark.mouseDown(with: event)
+        XCTAssertEqual(popup.phase, .expanded)
+        XCTAssertEqual(popup.panel.frame.width, 380, "An explicit click must not wait for the title animation to finish")
+        settle(); XCTAssertEqual(popup.phase, .expanded, "The old animation must not collapse the file menu later")
+    }
+
+    func testBubbleFolderActionOpensItsSessionDirectory() {
+        _ = NSApplication.shared
+        var opened: URL?
+        let button = FolderButton(opener: { opened = $0; return true })
+        let popup = TerminalSessionPopup(artifactBrowser: ArtifactBrowser(showLocation: false, visibleRowLimit: 5, loader: { _, done in done(ArtifactSnapshot()) }), folderButton: button)
+        defer { popup.hide() }
+        popup.show(Session(id: "a", cwd: "/tmp/workspace", title: "Topic"), tab: tab(1))
+        popup.expand(); button.openFolder()
+        XCTAssertEqual(opened?.path, "/tmp/workspace")
+        XCTAssertEqual(popup.phase, .collapsed)
     }
 
     func testInterruptedMorphFinishesAtLatestPhase() {

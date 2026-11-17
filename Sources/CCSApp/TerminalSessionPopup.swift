@@ -154,6 +154,14 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
             material.alphaValue = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency ? 1 : 0.9
         }
     }
+    /// Commit on mouse-down: the panel can resize between mouse-down and up.
+    private final class BubbleButton: NSButton {
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override func mouseDown(with event: NSEvent) {
+            guard isEnabled else { return }
+            if let action { sendAction(action, to: target) }
+        }
+    }
     private final class Label: NSTextField {
         override var allowsVibrancy: Bool { false }
     }
@@ -185,11 +193,12 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
     let artifactBrowser: ArtifactBrowser
     private let surface = Surface(frame: .zero)
     private let title = Label(wrappingLabelWithString: "")
+    let folderButton: FolderButton
     private let path = Label(labelWithString: "")
     private let detail = Label(labelWithString: "")
-    private let intro = NSButton(title: "", target: nil, action: nil)
-    private let bubble = NSButton(title: "", target: nil, action: nil)
-    private let mark = NSButton(image: BrandIcon.image(size: 36), target: nil, action: nil)
+    private let intro = BubbleButton(title: "", target: nil, action: nil)
+    private let bubble = BubbleButton(title: "", target: nil, action: nil)
+    private let mark = BubbleButton(image: BrandIcon.image(size: 36), target: nil, action: nil)
     private let stack = NSStackView()
     private var expandedConstraints = [NSLayoutConstraint]()
     private var bubbleConstraints = [NSLayoutConstraint](), introConstraints = [NSLayoutConstraint]()
@@ -203,11 +212,13 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
     private var previousApplication: NSRunningApplication?
     var onBrowseFiles: ((Session) -> Void)?
 
-    init(artifactBrowser: ArtifactBrowser? = nil) {
-        self.artifactBrowser = artifactBrowser ?? ArtifactBrowser(showLocation: false, backHint: "Collapse", visibleRowLimit: 5)
+    init(artifactBrowser: ArtifactBrowser? = nil, folderButton: FolderButton = FolderButton()) {
+        self.folderButton = folderButton
+        self.artifactBrowser = artifactBrowser ?? ArtifactBrowser(showLocation: false, visibleRowLimit: 5)
         panel = Panel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 56),
                       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         super.init()
+        folderButton.onOpened = { [weak self] in self?.collapse(restoreFocus: false) }
         panel.delegate = self; panel.isReleasedWhenClosed = false; panel.isFloatingPanel = true
         (panel as? Panel)?.onCancel = { [weak self] in self?.collapse() }
         panel.hidesOnDeactivate = false; panel.level = .floating
@@ -251,10 +262,13 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
             close.topAnchor.constraint(equalTo: heading.topAnchor), close.widthAnchor.constraint(equalToConstant: 20), close.heightAnchor.constraint(equalToConstant: 20),
         ])
         let metadata = NSView()
-        for view in [path, detail] { view.translatesAutoresizingMaskIntoConstraints = false; metadata.addSubview(view) }
+        for view in [path, folderButton, detail] { view.translatesAutoresizingMaskIntoConstraints = false; metadata.addSubview(view) }
         NSLayoutConstraint.activate([
-            path.leadingAnchor.constraint(equalTo: metadata.leadingAnchor), path.topAnchor.constraint(equalTo: metadata.topAnchor),
-            path.bottomAnchor.constraint(equalTo: metadata.bottomAnchor), path.trailingAnchor.constraint(equalTo: detail.leadingAnchor, constant: -12),
+            path.leadingAnchor.constraint(equalTo: metadata.leadingAnchor), path.centerYAnchor.constraint(equalTo: metadata.centerYAnchor),
+            path.trailingAnchor.constraint(equalTo: folderButton.leadingAnchor, constant: -4),
+            folderButton.centerYAnchor.constraint(equalTo: metadata.centerYAnchor),
+            folderButton.trailingAnchor.constraint(equalTo: detail.leadingAnchor, constant: -8),
+            metadata.heightAnchor.constraint(greaterThanOrEqualToConstant: 20),
             detail.trailingAnchor.constraint(equalTo: metadata.trailingAnchor), detail.firstBaselineAnchor.constraint(equalTo: path.firstBaselineAnchor),
         ])
         detail.setContentHuggingPriority(.required, for: .horizontal)
@@ -300,6 +314,7 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
     func show(_ session: Session, tab: TerminalTabSnapshot, announce: Bool = true) {
         self.session = session; self.tab = tab
         title.stringValue = session.terminalTitle; intro.title = session.terminalTitle
+        folderButton.setFolder(session.cwd)
         path.stringValue = session.cwd.isEmpty ? "Folder unavailable" : shortPath(session.cwd)
         detail.stringValue = [session.provider.title, session.status].filter { !$0.isEmpty }.joined(separator: " · ")
         intro.toolTip = session.terminalTitle + "\n" + path.stringValue + "\nClick for files"
@@ -318,11 +333,12 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
     @objc private func toggleExpansion() { if phase == .expanded { collapse() } else { expand() } }
     @objc func expand() {
         guard let session else { return }
+        let interruptingAnimation = morph?.isAnimating == true
         dismissal?.cancel(); hoverDelay?.cancel(); hoverPreview = false; presentation += 1
         previousApplication = NSWorkspace.shared.frontmostApplication
         needsFileFocus = true
         artifactBrowser.show(folder: session.cwd, refresh: true)
-        setPhase(.expanded)
+        setPhase(.expanded, animate: !interruptingAnimation)
         panel.makeKeyAndOrderFront(nil)
         artifactTimer?.invalidate()
         artifactTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
@@ -379,6 +395,7 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
             self.markTop.constant = blend(startMarkTop, endMarkTop)
             self.cornerRadius = blend(startRadius, endRadius); self.surface.setCornerRadius(self.cornerRadius)
             self.panel.setFrame(next, display: true, animate: false)
+            self.surface.layoutSubtreeIfNeeded()
             if progress >= 1 {
                 self.stack.isHidden = value != .expanded; self.intro.isHidden = value != .title; self.bubble.isHidden = value != .collapsed
                 NSLayoutConstraint.activate(value == .expanded ? self.expandedConstraints : value == .title ? self.introConstraints : self.bubbleConstraints)

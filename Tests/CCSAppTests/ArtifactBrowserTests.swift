@@ -17,6 +17,37 @@ final class ArtifactBrowserTests: XCTestCase {
                         windowNumber: window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code)!
     }
 
+    func testFolderActionUsesCurrentFolderAndNeverOpensOnSelection() {
+        _ = NSApplication.shared
+        var opened = [URL](), dismissed = 0
+        let button = FolderButton(opener: { opened.append($0); return true })
+        let browser = ArtifactBrowser(folderButton: button, loader: { _, done in done(ArtifactSnapshot()) })
+        browser.onOpened = { dismissed += 1 }
+        browser.show(folder: "/tmp/first")
+        browser.show(folder: "/tmp/Łódź team's workspace")
+        XCTAssertTrue(opened.isEmpty)
+        button.openFolder()
+        XCTAssertEqual(opened.map(\.path), ["/tmp/Łódź team's workspace"])
+        XCTAssertEqual(dismissed, 1)
+        browser.show(folder: nil)
+        XCTAssertFalse(button.isEnabled)
+        button.openFolder(); XCTAssertEqual(opened.count, 1)
+        browser.cancel()
+    }
+
+    func testUnavailableFolderDoesNotDismissTheBrowser() {
+        _ = NSApplication.shared
+        var dismissed = false
+        let button = FolderButton(opener: { _ in false })
+        let browser = ArtifactBrowser(folderButton: button, loader: { _, done in done(ArtifactSnapshot()) })
+        browser.onOpened = { dismissed = true }
+        browser.show(folder: "/missing")
+        button.openFolder()
+        XCTAssertFalse(dismissed)
+        XCTAssertTrue(button.toolTip?.contains("Couldn’t open") == true)
+        browser.cancel()
+    }
+
     func testRapidSelectionCoalescesRequestsAndDiscardsStaleFiles() {
         _ = NSApplication.shared
         var requests = [(String, (ArtifactSnapshot) -> Void)]()

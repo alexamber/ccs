@@ -54,10 +54,10 @@ final class ArtifactBrowser: NSView, NSTableViewDataSource, NSTableViewDelegate,
     private let opener: (SessionArtifact) -> Bool
     private let table = ArtifactTable(), scroll = NSScrollView()
     private let heading = ArtifactLabel(labelWithString: "Files in this folder")
+    let folderButton: FolderButton
     private let location = ArtifactLabel(labelWithString: "")
     private let status = ArtifactLabel(wrappingLabelWithString: "Select a session to see its files.")
     private let filter = NSSearchField()
-    private let navigationHint: String
     private let visibleRowLimit: Int?
     private var request = 0, pending: DispatchWorkItem?
     private var allFiles = [SessionArtifact]()
@@ -66,12 +66,12 @@ final class ArtifactBrowser: NSView, NSTableViewDataSource, NSTableViewDelegate,
     private(set) var folder: String?
     var onBack: (() -> Void)?, onOpened: (() -> Void)?, onLoaded: ((Int) -> Void)?
 
-    init(showLocation: Bool = true, backHint: String = "Back to sessions", visibleRowLimit: Int? = nil, loader: @escaping Loader = ArtifactService.shared.load,
+    init(showLocation: Bool = true, visibleRowLimit: Int? = nil, folderButton: FolderButton = FolderButton(), loader: @escaping Loader = ArtifactService.shared.load,
          opener: @escaping (SessionArtifact) -> Bool = ArtifactService.shared.open) {
-        self.loader = loader; self.opener = opener
+        self.loader = loader; self.opener = opener; self.folderButton = folderButton
         self.visibleRowLimit = visibleRowLimit
-        navigationHint = "↵ Open file · ← " + backHint
         super.init(frame: .zero)
+        folderButton.onOpened = { [weak self] in self?.onOpened?() }
         heading.font = .systemFont(ofSize: 12, weight: .semibold); heading.textColor = .labelColor
         location.font = .systemFont(ofSize: 10); location.textColor = .secondaryLabelColor; location.lineBreakMode = .byTruncatingMiddle
         filter.placeholderString = "Filter files"; filter.controlSize = .small; filter.delegate = self
@@ -89,8 +89,8 @@ final class ArtifactBrowser: NSView, NSTableViewDataSource, NSTableViewDelegate,
         status.maximumNumberOfLines = 2
         let header = NSView()
         do {
-            let headingRow = NSStackView(views: showLocation ? [heading, location] : [heading])
-            headingRow.spacing = 8; headingRow.alignment = .firstBaseline
+            let headingRow = NSStackView(views: showLocation ? [heading, location, folderButton] : [heading])
+            headingRow.spacing = 8; headingRow.alignment = .centerY
             heading.setContentHuggingPriority(.required, for: .horizontal)
             heading.setContentCompressionResistancePriority(.required, for: .horizontal)
             location.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -121,7 +121,7 @@ final class ArtifactBrowser: NSView, NSTableViewDataSource, NSTableViewDelegate,
     func show(folder: String?, refresh: Bool = false) {
         guard refresh || self.folder != folder else { return }
         let changed = self.folder != folder
-        self.folder = folder; request += 1; pending?.cancel()
+        self.folder = folder; folderButton.setFolder(folder); request += 1; pending?.cancel()
         let revision = request
         if changed {
             allFiles = []; files = []; filter.stringValue = ""; table.reloadData()
@@ -136,8 +136,8 @@ final class ArtifactBrowser: NSView, NSTableViewDataSource, NSTableViewDelegate,
             self.loader(folder) { [weak self] snapshot in
                 guard let self, revision == self.request else { return }
                 self.allFiles = snapshot.files; self.applyFilter()
-                self.status.stringValue = snapshot.issue ?? (self.files.isEmpty ? "No reports or documents found nearby." : self.navigationHint)
-                self.status.isHidden = false
+                self.status.stringValue = snapshot.issue ?? (self.files.isEmpty ? "No reports or documents found nearby." : "")
+                self.status.isHidden = self.status.stringValue.isEmpty
                 self.onLoaded?(self.files.count)
             }
         }
@@ -156,7 +156,8 @@ final class ArtifactBrowser: NSView, NSTableViewDataSource, NSTableViewDelegate,
         }
     }
     func controlTextDidChange(_ obj: Notification) {
-        applyFilter(); status.stringValue = files.isEmpty ? "No files match." : navigationHint
+        applyFilter(); status.stringValue = files.isEmpty ? "No files match." : ""
+        status.isHidden = status.stringValue.isEmpty
     }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         if commandSelector == #selector(NSResponder.moveDown(_:)) { return focusFiles() }

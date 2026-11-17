@@ -133,7 +133,8 @@ shortcuts use native hotkey registration and need no Accessibility permission.
 The native picker shows **Files in this folder** beside the selected session.
 Move through sessions to browse their files; press Right to enter the file list,
 Return to open a file, and Left to return to sessions. Clicks open files in their
-default app. The sidebar also has a file-name filter.
+default app. The sidebar also has a file-name filter. In the sidebar and expanded
+bubble, click the folder icon beside the path to open the workspace in Finder.
 
 Files are discovered automatically in the session folder and two levels of
 subfolders. HTML, PDF, Markdown, text, Office documents, and CSV are supported.

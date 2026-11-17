@@ -7,7 +7,7 @@ final class SessionSwitcher: NSObject, NSWindowDelegate, NSTableViewDataSource, 
     let panel = PickerPanel(contentRect: NSRect(x: 0, y: 0, width: 400, height: 130), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     private let table = NSTableView(), scroll = NSScrollView()
     private let message = NSTextField(labelWithString: "Finding active Terminal sessions…")
-    private let hint = NSTextField(labelWithString: "⌥Tab Next · ⇧ Reverse · Release ⌥ to switch · Esc Cancel")
+    private let hint = NSTextField(labelWithString: "⌥⇥ Next · ⇧ Reverse · Release ⌥ to switch · ⎋ Cancel")
     private var targets = [TerminalSwitchTarget](), steps = 1
     private var ready = false
     private(set) var presentation = 0
