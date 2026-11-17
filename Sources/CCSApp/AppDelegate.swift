@@ -38,8 +38,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let enabled = Settings.load().resolvingProviders(environment: env).enabledProviders
                 return try service.session(inTerminalTab: tab, enabledProviders: enabled)
             }) { result in completion(try? result.get()) }
-        }, show: { [weak self] session, tab in
-            self?.terminalPopup.show(session, tab: tab)
+        }, show: { [weak self] session, tab, announce in
+            self?.terminalPopup.show(session, tab: tab, announce: announce)
         },
            hide: { [weak self] reason in self?.terminalPopup.contextEnded(reason) })
         popup.onSave = { [weak self] value in try self?.updateSettings(value) }

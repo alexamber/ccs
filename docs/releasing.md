@@ -91,8 +91,11 @@ Claude/Codex versions and build number. Avoid testing with unsaved work at risk.
    conversation may intentionally share one row.
 2. **Ordinary Terminal switching.** Enable the popup preference, then switch tabs
    with Terminal's own shortcuts and by clicking. Pass: the bubble names the
-   selected conversation, keeps keyboard focus in Terminal, shrinks, and opens
-   the correct folder's files on click. A plain shell tab gets no session bubble.
+   selected conversation, keeps keyboard focus in Terminal, and shrinks. Hovering
+   reveals the name and leaving collapses it; clicking opens the correct folder's
+   files and moving the pointer away leaves them open. A plain shell tab gets no
+   session bubble. Switching apps and returning to the same tab does not replay
+   the name announcement.
 3. **Identity edge cases.** Rename a Codex tab, then separately change conversations
    inside a running Codex client. Pass: CCS either identifies the current
    conversation correctly or shows “Codex tab · Conversation unconfirmed” in
@@ -108,7 +111,8 @@ Claude/Codex versions and build number. Avoid testing with unsaved work at risk.
 5. **Spaces and displays.** With the bubble showing, swipe to a desktop without
    Terminal and back. Repeat with a full-screen app and an external display if
    available. Pass: the bubble does not follow onto unrelated desktops or appear
-   offscreen; returning to Terminal and switching a tab shows the correct bubble.
+   offscreen; returning to the desktop keeps the icon compact without replaying
+   the name. Switching a Terminal tab still announces the correct session.
 6. **Denied Automation.** In a separate macOS test account, refuse CCS's request
    to control Terminal (or disable it under Privacy & Security → Automation).
    Pass: session browsing still works; activation reports failure clearly; automatic

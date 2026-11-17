@@ -43,7 +43,11 @@ a bounded AppleScript call. A changed tty or normalized topic title triggers his
 process matching on the existing history lane. A full history snapshot can be
 reused for ten seconds, with fresh process inspection and a metadata refresh on
 a miss. Unmatched tabs retry after five seconds; activity spinners do not trigger
-metadata loads. Ambiguous matches are discarded.
+metadata loads. Ambiguous matches are discarded. The last observed tab/topic
+survives app deactivation, so returning to the same context restores only the
+compact icon. Native Space-change notifications collapse the panel in place and
+suppress the next name announcement, including another Terminal window on that
+Space. Reapplying unchanged popup settings does not reset this identity.
 Codex labels require one recognized interactive client on the tty and exactly one
 live conversation matching its folder and native title. A launch `resume ID` must
 agree with that match; it cannot resolve ambiguous titles or prove current identity.
@@ -52,7 +56,9 @@ This remains a conservative heuristic, not a provider-owned tty/thread mapping.
 There is at most one tab read and one metadata lookup in flight; generation checks
 discard results after a tab/app switch or settings change. A nonactivating
 panel shows a title oval for 2.5 seconds, pauses shrinking on hover, then collapses
-to a small persistent CCS bubble. Clicking expands a searchable file selector and
+to a small persistent CCS bubble. Hovering the compact icon for 120 ms reveals the
+name without keyboard focus or file discovery; leaving collapses it immediately.
+Clicking expands a searchable file selector and
 allows keyboard focus; resigning key collapses it. All phases retain the same
 upper-right Terminal anchor. A nonblocking 180 ms AppKit animation interpolates
 the frame and corner radius; interrupted transitions begin from the current frame.

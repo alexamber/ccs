@@ -84,9 +84,12 @@ not rename tabs.
 For a brief popup when switching tabs directly in Terminal, enable Settings →
 **Show session on Terminal tab switch**. An oval at the upper-right of the Terminal
 window shows the session name for about 2.5 seconds, then shrinks to a small unicorn
-bubble. Hover pauses shrinking. Click either bubble to expand a searchable file
+bubble. Hover over the compact icon briefly to reveal the name; moving away
+collapses it. Returning to the same tab or changing desktops does not replay the
+name announcement. Actual tab/topic changes still announce it. Click either bubble to expand a searchable file
 selector with the session name, folder, provider, and status. The expanded selector
 takes keyboard focus; clicking away, Escape, or opening a file collapses it.
+Moving the pointer away does not close a file selector opened by clicking.
 The unicorn stays visible during a smooth 180 ms size-and-corner transition.
 The expanded view fits up to five file rows, scrolling for more. The small bubble
 remains available across apps on the same desktop for the last identified session;

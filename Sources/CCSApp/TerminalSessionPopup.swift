@@ -4,35 +4,45 @@ import CCSCore
 /// All state lives on the main thread. Polls and metadata work are asynchronous;
 /// each permits only one in-flight request, even during rapid tab switching.
 final class TerminalSessionMonitor {
-    enum Dismissal { case inactive, disabled, tabChanged }
+    enum Dismissal { case inactive, disabled, tabChanged, spaceChanged }
     typealias ReadTab = (@escaping (TerminalTabSnapshot?) -> Void) -> Void
     typealias LoadSession = (TerminalTabSnapshot, @escaping (Session?) -> Void) -> Void
     private let frontmost: () -> Bool
     private let now: () -> Date
     private let readTab: ReadTab
     private let loadSession: LoadSession
-    private let show: (Session, TerminalTabSnapshot) -> Void
+    private let show: (Session, TerminalTabSnapshot, Bool) -> Void
     private let hide: (Dismissal) -> Void
-    private var observer: NSObjectProtocol?, timer: Timer?
+    private var observer: NSObjectProtocol?, spaceObserver: NSObjectProtocol?, timer: Timer?
     private var enabled = false, reading = false, resolving = false, needsResolve = false
-    private var current: TerminalTabSnapshot?
+    private var current: TerminalTabSnapshot?, lastObserved: TerminalTabSnapshot?
+    private var lastSessionKey: String?, announce = true, quietSpaceReturn = false
     private var revision = 0
     private var retryAfter: Date?
 
     init(frontmost: @escaping () -> Bool = { NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Terminal" },
          now: @escaping () -> Date = Date.init,
          readTab: @escaping ReadTab, loadSession: @escaping LoadSession,
-         show: @escaping (Session, TerminalTabSnapshot) -> Void, hide: @escaping (Dismissal) -> Void) {
+         show: @escaping (Session, TerminalTabSnapshot, Bool) -> Void, hide: @escaping (Dismissal) -> Void) {
         self.frontmost = frontmost; self.now = now; self.readTab = readTab; self.loadSession = loadSession
         self.show = show; self.hide = hide
         observer = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
                                                                      object: nil, queue: .main) { [weak self] _ in self?.updateActivity() }
+        spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification,
+                                                                          object: nil, queue: .main) { [weak self] _ in self?.spaceChanged() }
     }
     deinit {
         timer?.invalidate()
         if let observer { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
+        if let spaceObserver { NSWorkspace.shared.notificationCenter.removeObserver(spaceObserver) }
+    }
+    func spaceChanged() {
+        quietSpaceReturn = true
+        stop(.spaceChanged)
+        updateActivity()
     }
     func configure(enabled: Bool) {
+        guard self.enabled != enabled else { return }
         self.enabled = enabled
         stop(.disabled)
         updateActivity()
@@ -48,6 +58,7 @@ final class TerminalSessionMonitor {
     private func stop(_ reason: Dismissal) {
         timer?.invalidate(); timer = nil
         revision += 1; current = nil; needsResolve = false; retryAfter = nil
+        if reason == .disabled { lastObserved = nil; lastSessionKey = nil; announce = true; quietSpaceReturn = false }
         hide(reason)
     }
     func tick() {
@@ -59,10 +70,14 @@ final class TerminalSessionMonitor {
             guard let self else { return }
             self.reading = false
             guard self.enabled, self.frontmost(), request == self.revision else { return }
-            let changed = self.current?.tty != snapshot?.tty || self.current?.matchingTitle != snapshot?.matchingTitle
-            self.current = snapshot
-            guard changed || self.retryAfter.map({ self.now() >= $0 }) == true else { return }
-            if changed { self.revision += 1; self.hide(.tabChanged) }
+            let returning = self.current == nil
+            let changed = self.lastObserved?.tty != snapshot?.tty || self.lastObserved?.matchingTitle != snapshot?.matchingTitle
+            self.current = snapshot; self.lastObserved = snapshot
+            guard changed || returning || self.retryAfter.map({ self.now() >= $0 }) == true else { return }
+            if changed {
+                if !returning { self.quietSpaceReturn = false }
+                self.revision += 1; self.announce = true; self.hide(.tabChanged)
+            }
             self.retryAfter = nil
             self.needsResolve = snapshot != nil
             self.resolve()
@@ -76,7 +91,11 @@ final class TerminalSessionMonitor {
             guard let self else { return }
             self.resolving = false
             if self.enabled, self.frontmost(), request == self.revision, let snapshot = self.current {
-                if let session { self.show(session, snapshot) }
+                if let session {
+                    let announce = !self.quietSpaceReturn && (self.announce || self.lastSessionKey != session.key)
+                    self.lastSessionKey = session.key; self.announce = false; self.quietSpaceReturn = false
+                    self.show(session, snapshot, announce)
+                }
                 else { self.retryAfter = self.now().addingTimeInterval(5) }
             }
             self.resolve()
@@ -167,7 +186,8 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
     private var surfaceWidth: NSLayoutConstraint!, surfaceHeight: NSLayoutConstraint!
     private var markTop: NSLayoutConstraint!
     private var session: Session?, tab: TerminalTabSnapshot?
-    private var hovering = false
+    private var hovering = false, hoverPreview = false
+    private var hoverDelay: DispatchWorkItem?
     private var dismissal: DispatchWorkItem?, artifactTimer: Timer?
     private var presentation = 0
     private var previousApplication: NSRunningApplication?
@@ -254,7 +274,7 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         }
         mark.isBordered = false; mark.imageScaling = .scaleProportionallyUpOrDown
         mark.target = self; mark.action = #selector(toggleExpansion)
-        mark.toolTip = "CCS · Expand or collapse session files"
+        mark.setAccessibilityLabel("CCS session files. Hover for name; click for files.")
         mark.translatesAutoresizingMaskIntoConstraints = false; surface.addSubview(mark)
         markTop = mark.topAnchor.constraint(equalTo: surface.topAnchor, constant: 10)
         NSLayoutConstraint.activate([
@@ -267,23 +287,28 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         NSLayoutConstraint.activate([surfaceWidth, surfaceHeight])
         setPhase(.collapsed, animate: false)
     }
-    func show(_ session: Session, tab: TerminalTabSnapshot) {
+    func show(_ session: Session, tab: TerminalTabSnapshot, announce: Bool = true) {
         self.session = session; self.tab = tab
         title.stringValue = session.terminalTitle; intro.title = session.terminalTitle
         path.stringValue = session.cwd.isEmpty ? "Folder unavailable" : shortPath(session.cwd)
         detail.stringValue = [session.provider.title, session.status].filter { !$0.isEmpty }.joined(separator: " · ")
         intro.toolTip = session.terminalTitle + "\n" + path.stringValue + "\nClick for files"
-        bubble.toolTip = intro.toolTip
+        mark.setAccessibilityLabel(session.terminalTitle + ". Hover for name; click for files.")
         stopLoading()
-        setPhase(.title, animate: panel.isVisible)
-        panel.orderFrontRegardless()
-        hovering = NSMouseInRect(NSEvent.mouseLocation, panel.frame, false)
-        scheduleCollapse()
+        setPhase(announce ? .title : .collapsed, animate: announce && panel.isVisible)
+        // A quiet restore must not move the panel onto an unrelated Space.
+        if announce || panel.isOnActiveSpace { panel.orderFrontRegardless() }
+        hovering = false
+        if announce {
+            hovering = NSMouseInRect(NSEvent.mouseLocation, panel.frame, false)
+            hoverPreview = hovering
+            scheduleCollapse()
+        }
     }
     @objc private func toggleExpansion() { if phase == .expanded { collapse() } else { expand() } }
     @objc func expand() {
         guard let session else { return }
-        dismissal?.cancel(); presentation += 1
+        dismissal?.cancel(); hoverDelay?.cancel(); hoverPreview = false; presentation += 1
         previousApplication = NSWorkspace.shared.frontmostApplication
         needsFileFocus = true
         artifactBrowser.show(folder: session.cwd, refresh: true)
@@ -369,13 +394,31 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
     }
     func setHovering(_ value: Bool) {
-        hovering = value
-        if value { dismissal?.cancel(); presentation += 1 }
-        else { scheduleCollapse() }
+        guard hovering != value else { return }
+        hovering = value; hoverDelay?.cancel()
+        guard phase != .expanded, panel.isVisible else { return }
+        if value {
+            dismissal?.cancel(); presentation += 1
+            hoverPreview = true
+            guard phase == .collapsed else { return }
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.hovering, self.phase == .collapsed, self.panel.isVisible else { return }
+                self.setPhase(.title)
+            }
+            hoverDelay = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+        } else if hoverPreview {
+            hoverPreview = false
+            if phase == .title { collapse(restoreFocus: false) }
+        } else { scheduleCollapse() }
     }
     func contextEnded(_ reason: TerminalSessionMonitor.Dismissal) {
         switch reason {
         case .disabled, .tabChanged: hide()
+        case .spaceChanged:
+            // Collapse in place without replaying the title or changing Spaces.
+            stopLoading(); hovering = false
+            setPhase(.collapsed, animate: false); panel.resignKey()
         case .inactive:
             // Keep the last identified folder within reach across applications.
             // Opening CCS's picker hides the bubble so the two panels do not overlap.
@@ -384,7 +427,7 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         }
     }
     private func stopLoading() {
-        dismissal?.cancel(); presentation += 1
+        dismissal?.cancel(); hoverDelay?.cancel(); hoverPreview = false; presentation += 1
         artifactTimer?.invalidate(); artifactTimer = nil; artifactBrowser.cancel()
     }
     func hide() {
