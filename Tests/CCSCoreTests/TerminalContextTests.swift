@@ -192,9 +192,11 @@ final class TerminalContextTests: XCTestCase {
             return CommandResult(out: processes)
         }, codex: CodexProvider(enabled: false), arguments: { _ in ["claude"] })
         _ = try service.collect(days: 0, provider: .all, enabledProviders: [.claude])
+        let collectedAt = try XCTUnwrap(service.cachedTerminalMetadata?.updatedAt)
         let first = try XCTUnwrap(TerminalTabSnapshot(output: "/dev/ttys001\n0\n0\n900\n600"))
         XCTAssertEqual(try service.session(inTerminalTab: first, enabledProviders: [.claude])?.id, "abc")
         XCTAssertEqual(loads, 1, "A tab switch should reuse the picker's recent history")
+        XCTAssertEqual(service.cachedTerminalMetadata?.updatedAt, collectedAt, "A cached lookup must not extend metadata freshness")
         second = true
         let next = try XCTUnwrap(TerminalTabSnapshot(output: "/dev/ttys002\n0\n0\n900\n600"))
         XCTAssertEqual(try service.session(inTerminalTab: next, enabledProviders: [.claude])?.id, "def")

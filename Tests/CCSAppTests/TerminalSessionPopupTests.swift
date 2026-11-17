@@ -123,6 +123,21 @@ final class TerminalSessionPopupTests: XCTestCase {
         monitor.tick(); XCTAssertEqual(announcements.count, count)
     }
 
+    func testTransientTabReadFailureDoesNotReplayNameOnRecovery() {
+        _ = NSApplication.shared
+        var selected: TerminalTabSnapshot? = tab(1), announcements = [Bool]()
+        let monitor = TerminalSessionMonitor(frontmost: { true }, readTab: { $0(selected) },
+            loadSession: { _, done in done(Session(id: "a", cwd: "/tmp", title: "Topic")) },
+            show: { _, _, announce in announcements.append(announce) }, hide: { _ in })
+        monitor.configure(enabled: true)
+        defer { monitor.configure(enabled: false) }
+        selected = nil; monitor.tick(); monitor.tick()
+        selected = tab(1); monitor.tick()
+        XCTAssertEqual(announcements, [true, false])
+        selected = tab(2); monitor.tick()
+        XCTAssertEqual(announcements, [true, false, true])
+    }
+
     func testHoverPeeksAtNameWithoutFilesOrFocusAndLeavingCollapses() {
         _ = NSApplication.shared
         var scans = 0

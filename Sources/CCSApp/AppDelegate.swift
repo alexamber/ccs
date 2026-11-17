@@ -126,6 +126,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         do {
             if shortcutChanged { try hotkey.register(code: value.hotkeyCode, modifiers: value.hotkeyModifiers) }
             if save { try value.save() }
+            if old.enabledProviders != value.enabledProviders {
+                switchTargets = []; switchKeysByTTY = [:]; switchUpdated = .distantPast
+                sessionSwitcher.hide()
+            }
             settings = value; popup.apply(value); preferences.apply(value)
             terminalMonitor?.configure(enabled: value.terminalPopups)
         } catch {

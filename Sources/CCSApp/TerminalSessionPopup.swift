@@ -37,6 +37,7 @@ final class TerminalSessionMonitor {
         if let spaceObserver { NSWorkspace.shared.notificationCenter.removeObserver(spaceObserver) }
     }
     func spaceChanged() {
+        guard enabled else { return }
         quietSpaceReturn = true
         stop(.spaceChanged)
         updateActivity()
@@ -70,8 +71,17 @@ final class TerminalSessionMonitor {
             guard let self else { return }
             self.reading = false
             guard self.enabled, self.frontmost(), request == self.revision else { return }
+            guard let snapshot else {
+                // An Apple event can fail during activation/Space transitions.
+                // Hide stale content, but do not turn recovery into a new topic.
+                if self.current != nil {
+                    self.revision += 1; self.current = nil; self.needsResolve = false; self.retryAfter = nil
+                    self.hide(.tabChanged)
+                }
+                return
+            }
             let returning = self.current == nil
-            let changed = self.lastObserved?.tty != snapshot?.tty || self.lastObserved?.matchingTitle != snapshot?.matchingTitle
+            let changed = self.lastObserved?.tty != snapshot.tty || self.lastObserved?.matchingTitle != snapshot.matchingTitle
             self.current = snapshot; self.lastObserved = snapshot
             guard changed || returning || self.retryAfter.map({ self.now() >= $0 }) == true else { return }
             if changed {
@@ -79,7 +89,7 @@ final class TerminalSessionMonitor {
                 self.revision += 1; self.announce = true; self.hide(.tabChanged)
             }
             self.retryAfter = nil
-            self.needsResolve = snapshot != nil
+            self.needsResolve = true
             self.resolve()
         }
     }
@@ -297,7 +307,7 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         stopLoading()
         setPhase(announce ? .title : .collapsed, animate: announce && panel.isVisible)
         // A quiet restore must not move the panel onto an unrelated Space.
-        if announce || panel.isOnActiveSpace { panel.orderFrontRegardless() }
+        if announce || (!panel.isVisible && panel.isOnActiveSpace) { panel.orderFrontRegardless() }
         hovering = false
         if announce {
             hovering = NSMouseInRect(NSEvent.mouseLocation, panel.frame, false)

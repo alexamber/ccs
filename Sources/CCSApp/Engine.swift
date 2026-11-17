@@ -112,12 +112,12 @@ final class Engine {
                 lane.service = self.makeService(environment)
             }
             let result = Result { try work(lane.service!, environment) }
-            let sessions = lane === self.background ? lane.service?.cachedTerminalSessions : nil
+            let metadata = lane === self.background ? lane.service?.cachedTerminalMetadata : nil
             let socketPath = lane.service?.codex.sharedSocketPath
             DispatchQueue.main.async {
-                if let sessions {
-                    self.switchSessions = sessions; self.switchSocketPath = socketPath
-                    self.metadataUpdated = Date()
+                if let metadata {
+                    self.switchSessions = metadata.sessions; self.switchSocketPath = socketPath
+                    self.metadataUpdated = metadata.updatedAt
                 }
                 completion(result)
             }
