@@ -15,6 +15,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var settingsObserver: NSObjectProtocol?
     var dismissal: TransientUIDismissal?
     private let terminalPopup = TerminalSessionPopup()
+    private let sessionOverview = SessionOverview()
+    private lazy var activity = SessionActivityCoordinator(load: { [weak self] providers, done in
+        self?.engine.loadTerminalActivity(enabledProviders: providers, completion: done)
+    }, remember: { [weak self] in self?.engine.rememberActivity($0) })
+    private let codexEvents = CodexActivityListener()
+    private var claudeEvents: NSObjectProtocol?
+    private var eventConfiguration = 0
+    private var eventSettings: String?
+    private var lastClaudeEvent = [String: Double]()
     private var terminalMonitor: TerminalSessionMonitor?
     var cliMenuItem: NSMenuItem?
     var newMenuItem: NSMenuItem?
@@ -23,6 +32,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.setActivationPolicy(.accessory)
         popup = Popup(engine: engine, settings: settings)
         terminalPopup.onBrowseFiles = { [weak self] session in self?.popup.showFiles(for: session) }
+        terminalPopup.onShowSessions = { [weak self] anchor in self?.showSessionOverview(anchor: anchor) }
+        terminalPopup.onDragStart = { [weak self] in self?.sessionOverview.close() }
+        terminalPopup.onNotificationOpen = { [weak self] target in
+            guard let self else { return }
+            self.focus(target, sessions: self.activity.targets.compactMap(\.session))
+        }
+        terminalPopup.onNotificationHover = { [weak self] value in self?.activity.hovered = value }
+        activity.canPresent = { [weak self] in self?.terminalPopup.canShowNotification == true }
+        activity.onShow = { [weak self] update in
+            guard let self else { return }
+            self.terminalPopup.notify(update, bubble: self.settings.notificationBubble, wiggle: self.settings.notificationWiggle)
+        }
+        activity.onHide = { [weak self] in self?.terminalPopup.speech.hide() }
+        activity.onUnreadChange = { [weak self] in self?.terminalPopup.setUpdateCount($0) }
+        activity.onSnapshot = { [weak self] snapshot, finished in
+            guard let self, self.sessionOverview.isShown else { return }
+            self.sessionOverview.supply(snapshot, finished: finished, generation: self.sessionOverview.generation)
+        }
+        claudeEvents = DistributedNotificationCenter.default().addObserver(forName: ClaudeActivityHook.notification, object: nil, queue: .main) { [weak self] note in
+            self?.receiveClaudeEvent(note.userInfo)
+        }
+        sessionOverview.onSelect = { [weak self] target, sessions in self?.focus(target, sessions: sessions) }
+        sessionOverview.onBrowse = { [weak self] in self?.popup.show() }
+        sessionOverview.onClose = { [weak self] in self?.terminalPopup.sessionOverviewClosed() }
+        sessionOverview.onRefresh = { [weak self] in
+            guard let self else { return }; self.refreshSessionOverview(generation: self.sessionOverview.generation)
+        }
         popup.onSettings = { [weak self] in self?.showSettings() }
         preferences = Preferences(settings: settings, engine: engine)
         preferences.onSave = { [weak self] value in try self?.updateSettings(value) }
@@ -38,10 +74,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let enabled = Settings.load().resolvingProviders(environment: env).enabledProviders
                 return try service.session(inTerminalTab: tab, enabledProviders: enabled)
             }) { result in completion(try? result.get()) }
-        }, show: { [weak self] session, tab, announce in
-            self?.terminalPopup.show(session, tab: tab, announce: announce)
+        }, show: { [weak self] session, tab in
+            self?.terminalPopup.show(session, tab: tab)
         },
            hide: { [weak self] reason in self?.terminalPopup.contextEnded(reason) })
+        terminalMonitor?.onFocus = { [weak self] key in self?.activity.observe(key) }
         popup.onSave = { [weak self] value in try self?.updateSettings(value) }
         hotkey.onPress = { [weak self] in
             guard let self, !self.preferences.finishRecordingCurrentShortcut() else { return }
@@ -50,16 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         nextSessionKey.onPress = { [weak self] in self?.switchSession(step: 1) }
         previousSessionKey.onPress = { [weak self] in self?.switchSession(step: -1) }
         sessionSwitcher.onCommit = { [weak self] target, sessions in
-            guard let self else { return }
-            self.engine.perform({ service, _ in try service.focusTerminalTarget(target, sessions: sessions) }) { [weak self] result in
-                switch result {
-                case .success:
-                    self?.rememberSwitch(target.key)
-                case .failure(let error):
-                    self?.switchUpdated = .distantPast
-                    showError(error)
-                }
-            }
+            self?.focus(target, sessions: sessions)
         }
         let appMenu = NSMenu()
         appMenu.addItem(item("About CCS", #selector(about)))
@@ -132,6 +160,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             settings = value; popup.apply(value); preferences.apply(value)
             terminalMonitor?.configure(enabled: value.terminalPopups)
+            terminalPopup.configureFloating(enabled: value.terminalPopups, allSpaces: value.unicornAllSpaces)
+            let reset = old.enabledProviders != value.enabledProviders || old.terminalPopups != value.terminalPopups
+            if reset { sessionOverview.close() }
+            activity.configure(value)
+            configureActivityEvents()
         } catch {
             if shortcutChanged { try? hotkey.register(code: old.hotkeyCode, modifiers: old.hotkeyModifiers) }
             throw error
@@ -140,6 +173,78 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func rememberSwitch(_ key: String) {
         switchHistory.removeAll { $0 == key }; switchHistory.insert(key, at: 0)
         switchHistory = Array(switchHistory.prefix(100))
+    }
+    private func configureActivityEvents() {
+        let enabled = settings.terminalPopups
+        let signature = "\(enabled):" + settings.enabledProviders.map(\.rawValue).joined(separator: ",")
+        guard signature != eventSettings else { return }
+        eventSettings = signature; eventConfiguration += 1
+        let revision = eventConfiguration, providers = settings.enabledProviders
+        codexEvents.stop()
+        let cli = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/ccs").path
+        engine.perform({ _, environment in
+            try ClaudeActivityHook.configure(enabled: enabled && providers.contains(.claude), cli: cli, environment: environment)
+            return environment
+        }) { [weak self] result in
+            guard let self, revision == self.eventConfiguration else { return }
+            switch result {
+            case .success(let environment):
+                if enabled && providers.contains(.codex) {
+                    self.codexEvents.start(environment: environment) { [weak self] session in self?.receiveEvent(session) }
+                }
+            case .failure(let error):
+                self.eventSettings = nil
+                showError(CCSError.message("Claude notification setup failed: \(error.localizedDescription) Status polling remains available."))
+                // A Claude configuration problem must not disable Codex events.
+                if enabled && providers.contains(.codex) {
+                    self.engine.perform({ _, environment in environment }) { [weak self] value in
+                        guard let self, revision == self.eventConfiguration, let environment = try? value.get() else { return }
+                        self.codexEvents.start(environment: environment) { [weak self] session in self?.receiveEvent(session) }
+                    }
+                }
+            }
+        }
+    }
+    private func receiveEvent(_ session: Session) { activity.ingest(session) }
+    private func receiveClaudeEvent(_ payload: [AnyHashable: Any]?) {
+        guard settings.enabledProviders.contains(.claude),
+              let id = payload?["id"] as? String, !id.isEmpty, id.count < 200,
+              let status = payload?["status"] as? String, ["active", "idle", "error", "waiting_for_approval", "waiting_input"].contains(status),
+              let stamp = payload?["time"] as? String, let time = Double(stamp), time.isFinite,
+              abs(Date().timeIntervalSince1970 - time) < 60, time > (lastClaudeEvent[id] ?? 0),
+              let eventID = payload?["eventID"] as? String, UUID(uuidString: eventID) != nil else { return }
+        lastClaudeEvent[id] = time
+        lastClaudeEvent = lastClaudeEvent.filter { Date().timeIntervalSince1970 - $0.value < 3600 }
+        var session = activity.targets.compactMap(\.session).first { $0.provider == .claude && $0.id == id }
+            ?? Session(id: id, cwd: payload?["cwd"] as? String ?? "", provider: .claude)
+        session.status = status; session.mtime = time; session.activityTurn = nil
+        if status == "idle" { session.activityTurn = SessionActivityTurn(id: eventID, status: "completed") }
+        receiveEvent(session)
+    }
+    private func focus(_ target: TerminalSwitchTarget, sessions: [Session]) {
+        sessionOverview.close()
+        engine.perform({ service, _ in try service.focusTerminalTarget(target, sessions: sessions) }) { [weak self] result in
+            switch result {
+            case .success: self?.rememberSwitch(target.key)
+            case .failure(let error): self?.switchUpdated = .distantPast; showError(error)
+            }
+        }
+    }
+    private func showSessionOverview(anchor: NSView) {
+        if sessionOverview.isShown { sessionOverview.close(); return }
+        popup.hide(restoreFocus: false); sessionSwitcher.hide()
+        let generation = sessionOverview.show(anchor: anchor, cached: activity.recentSnapshot, finished: activity.finished)
+        refreshSessionOverview(generation: generation)
+    }
+    private func refreshSessionOverview(generation: Int) {
+        activity.refresh { [weak self] result in
+            guard let self, self.sessionOverview.generation == generation, self.sessionOverview.isShown else { return }
+            switch result {
+            case .success(let snapshot):
+                self.sessionOverview.supply(snapshot, finished: self.activity.finished, generation: generation)
+            case .failure(let error): self.sessionOverview.fail(error, generation: generation)
+            }
+        }
     }
     private func orderedTargets(_ targets: [TerminalSwitchTarget]) -> [TerminalSwitchTarget] {
         targets.sorted {
@@ -154,7 +259,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let sourceWasTerminal = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Terminal"
         let cached = Date().timeIntervalSince(switchUpdated) < 30 ? orderedTargets(switchTargets) : []
         let keysByTTY = switchKeysByTTY
-        popup.hide(restoreFocus: false); terminalPopup.hide()
+        popup.hide(restoreFocus: false); sessionOverview.close(); terminalPopup.collapse(restoreFocus: false)
         let presentation = sessionSwitcher.show(targets: cached, step: step)
         if !cached.isEmpty {
             if sourceWasTerminal {
@@ -215,6 +320,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     func menuDidClose(_ menu: NSMenu) { dismissal?.menuDidClose() }
     func applicationWillTerminate(_ notification: Notification) {
+        codexEvents.stop(); activity.stop()
+        if let claudeEvents { DistributedNotificationCenter.default().removeObserver(claudeEvents) }
         dismissal?.stop()
         if let showObserver { DistributedNotificationCenter.default().removeObserver(showObserver) }
         if let settingsObserver { DistributedNotificationCenter.default().removeObserver(settingsObserver) }

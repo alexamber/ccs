@@ -6,6 +6,7 @@ struct HistorySnapshot {
     let sessions: [Session]
     let issues: [Provider: String]
     let installedProviders: [Provider]
+    var terminalKeys: Set<String>? = nil
 }
 
 final class Engine {
@@ -20,6 +21,8 @@ final class Engine {
     private let background = Lane("history", qos: .utility)
     private let switchOrigin = Lane("switch-origin", qos: .userInitiated)
     private let switching = Lane("switching", qos: .userInitiated)
+    private let activity = Lane("activity", qos: .utility)
+    private var activitySessions = [Session]()
     // Main-thread snapshots; provider connections remain confined to their lane.
     private var originGeneration = 0
     private var originRequest: DispatchWorkItem?
@@ -46,12 +49,39 @@ final class Engine {
         perform(background: true, { service, env in
             let enabled = Settings.load().resolvingProviders(environment: env).enabledProviders
             let sessions = try service.collect(days: 0, provider: .all, enabledProviders: enabled)
+            let context = try? service.terminalSwitchContext(sessions: sessions, includeUnconfirmedCodex: false)
             return HistorySnapshot(sessions: sessions, issues: service.issues,
-                                   installedProviders: enabled.filter { $0.isInstalled(environment: env) })
+                                   installedProviders: enabled.filter { $0.isInstalled(environment: env) },
+                                   terminalKeys: context.map { Set($0.targets.compactMap { $0.session?.key }) })
         }) { result in
             let callbacks = self.historyCompletions; self.historyCompletions = []
             callbacks.forEach { $0(result) }
         }
+    }
+
+    func loadTerminalActivity(enabledProviders: [Provider], completion: @escaping (Result<TerminalActivitySnapshot, Error>) -> Void) {
+        let known = switchSessions + activitySessions.filter { session in !switchSessions.contains { $0.key == session.key } }
+        perform(on: activity, { service, _ in
+            try service.terminalActivity(known: known, enabledProviders: enabledProviders)
+        }) { result in
+            guard case .success(let snapshot) = result else { completion(result); return }
+            let previous = Dictionary(self.activitySessions.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+            let targets = snapshot.context.targets.map { target -> TerminalSwitchTarget in
+                guard var session = target.session, session.provider == .claude, let old = previous[session.key] else { return target }
+                // Claude's live list has a start time, not a last-activity time.
+                // Preserve history recency and advance it on observed state changes.
+                session.mtime = max(session.mtime, old.mtime)
+                if session.status != old.status, SessionActivity(status: session.status) != .unknown,
+                   SessionActivity(status: old.status) != .unknown { session.mtime = Date().timeIntervalSince1970 }
+                return TerminalSwitchTarget(session: session, tab: target.tab, processID: target.processID)
+            }
+            self.activitySessions = targets.compactMap(\.session)
+            completion(.success(TerminalActivitySnapshot(context: TerminalSwitchContext(targets: targets,
+                currentKey: snapshot.context.currentKey, keysByTTY: snapshot.context.keysByTTY), unavailableProviders: snapshot.unavailableProviders)))
+        }
+    }
+    func rememberActivity(_ session: Session) {
+        activitySessions.removeAll { $0.key == session.key }; activitySessions.append(session)
     }
 
     func loadSwitchOrigin(completion: @escaping (Result<String?, Error>) -> Void) {

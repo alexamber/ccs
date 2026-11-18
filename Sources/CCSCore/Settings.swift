@@ -24,16 +24,29 @@ public struct Settings: Codable, Equatable {
     private var storedProviderFilter: ProviderFilter?
     private var storedEnabledProviders: [Provider]?
     private var storedTerminalPopups: Bool?
+    private var storedUnicornAllSpaces: Bool?
+    private var storedNotifyAttention: Bool?
+    private var storedNotifyCompletion: Bool?
+    private var storedNotificationBubble: Bool?
+    private var storedNotificationWiggle: Bool?
     private enum CodingKeys: String, CodingKey {
         case defaultDays, folders, newDirectory, cleanup, hotkeyCode, hotkeyModifiers, hotkeyLabel
         case storedNewProvider = "newProvider", storedProviderFilter = "providerFilter"
         case storedEnabledProviders = "enabledProviders"
         case storedTerminalPopups = "terminalPopups"
+        case storedUnicornAllSpaces = "unicornAllSpaces", storedNotifyAttention = "notifyAttention"
+        case storedNotifyCompletion = "notifyCompletion", storedNotificationBubble = "notificationBubble"
+        case storedNotificationWiggle = "notificationWiggle"
     }
     public var terminalPopups: Bool {
         get { storedTerminalPopups ?? false }
         set { storedTerminalPopups = newValue }
     }
+    public var unicornAllSpaces: Bool { get { storedUnicornAllSpaces ?? true } set { storedUnicornAllSpaces = newValue } }
+    public var notifyAttention: Bool { get { storedNotifyAttention ?? true } set { storedNotifyAttention = newValue } }
+    public var notifyCompletion: Bool { get { storedNotifyCompletion ?? true } set { storedNotifyCompletion = newValue } }
+    public var notificationBubble: Bool { get { storedNotificationBubble ?? true } set { storedNotificationBubble = newValue } }
+    public var notificationWiggle: Bool { get { storedNotificationWiggle ?? true } set { storedNotificationWiggle = newValue } }
     public var newProvider: Provider {
         get { storedNewProvider ?? .claude }
         set { storedNewProvider = newValue }

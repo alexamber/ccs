@@ -12,7 +12,7 @@ final class TerminalSessionPopupTests: XCTestCase {
         }, loadSession: { _, done in
             requests += 1
             done(available ? Session(id: "a", cwd: "/tmp", title: topic) : nil)
-        }, show: { _, _, _ in shown += 1 }, hide: { _ in })
+        }, show: { _, _ in shown += 1 }, hide: { _ in })
         monitor.configure(enabled: true)
         defer { monitor.configure(enabled: false) }
         XCTAssertEqual(requests, 1)
@@ -21,6 +21,10 @@ final class TerminalSessionPopupTests: XCTestCase {
         XCTAssertEqual(requests, 2); XCTAssertEqual(shown, 1)
         topic = "⠼ Topic"; monitor.tick()
         topic = "⠋ Topic"; monitor.tick()
+        topic = "[ ! ] Action Required | Topic"; monitor.tick()
+        topic = "[ . ] Action Required | Topic"; monitor.tick()
+        topic = "● [ ! ] Action Required | Topic"; monitor.tick()
+        topic = "Topic"; monitor.tick()
         XCTAssertEqual(requests, 2, "Activity animation must not trigger metadata loads")
         topic = "Another topic"; monitor.tick()
         XCTAssertEqual(requests, 3); XCTAssertEqual(shown, 2)
@@ -35,7 +39,7 @@ final class TerminalSessionPopupTests: XCTestCase {
         var front = false, reads = 0, shown = 0
         var response: ((TerminalTabSnapshot?) -> Void)?
         let monitor = TerminalSessionMonitor(frontmost: { front }, readTab: { reads += 1; response = $0 },
-                                             loadSession: { _, done in done(nil) }, show: { _, _, _ in shown += 1 }, hide: { _ in })
+                                             loadSession: { _, done in done(nil) }, show: { _, _ in shown += 1 }, hide: { _ in })
         monitor.tick(); XCTAssertEqual(reads, 0)
         monitor.configure(enabled: true); XCTAssertEqual(reads, 0)
         front = true; monitor.updateActivity(); XCTAssertEqual(reads, 1)
@@ -54,7 +58,7 @@ final class TerminalSessionPopupTests: XCTestCase {
         var requests = [(String, (Session?) -> Void)](), shown = [String](), hides = 0
         let monitor = TerminalSessionMonitor(frontmost: { true }, readTab: { $0(selected) },
                                              loadSession: { requests.append(($0.tty, $1)) },
-                                             show: { _, tab, _ in shown.append(tab.tty) }, hide: { _ in hides += 1 })
+                                             show: { _, tab in shown.append(tab.tty) }, hide: { _ in hides += 1 })
         monitor.configure(enabled: true)
         defer { monitor.configure(enabled: false) }
         XCTAssertEqual(requests.count, 1)
@@ -88,7 +92,7 @@ final class TerminalSessionPopupTests: XCTestCase {
         var completion: ((Session?) -> Void)?
         let snapshot = tab(1)
         let monitor = TerminalSessionMonitor(frontmost: { front }, readTab: { $0(snapshot) },
-                                             loadSession: { _, done in completion = done }, show: { _, _, _ in shown = true }, hide: { _ in })
+                                             loadSession: { _, done in completion = done }, show: { _, _ in shown = true }, hide: { _ in })
         monitor.configure(enabled: true)
         defer { monitor.configure(enabled: false) }
         front = false; monitor.updateActivity()
@@ -96,46 +100,35 @@ final class TerminalSessionPopupTests: XCTestCase {
         XCTAssertFalse(shown)
     }
 
-    func testSameTabReturnsQuietlyButRealTabAndTopicChangesAnnounce() {
+    func testContextRestoresQuietlyAfterAppSpaceAndReadChanges() {
         _ = NSApplication.shared
-        var front = true, selected = tab(1), announcements = [Bool]()
+        var front = true, selected: TerminalTabSnapshot? = tab(1), resolved = 0
+        let popup = TerminalSessionPopup()
+        popup.configureFloating(enabled: true, allSpaces: true)
         let monitor = TerminalSessionMonitor(frontmost: { front }, readTab: { $0(selected) },
             loadSession: { _, done in done(Session(id: "a", cwd: "/tmp", title: "Topic")) },
-            show: { _, _, announce in announcements.append(announce) }, hide: { _ in })
+            show: { session, tab in resolved += 1; popup.show(session, tab: tab) },
+            hide: { popup.contextEnded($0) })
         monitor.configure(enabled: true)
-        defer { monitor.configure(enabled: false) }
-        XCTAssertEqual(announcements, [true])
+        defer { monitor.configure(enabled: false); popup.hide() }
+        XCTAssertEqual(resolved, 1); XCTAssertEqual(popup.phase, .collapsed)
         front = false; monitor.updateActivity()
         front = true; monitor.updateActivity()
-        XCTAssertEqual(announcements, [true, false], "Returning to the same Terminal tab must not replay its name")
         monitor.spaceChanged()
-        XCTAssertEqual(announcements, [true, false, false])
+        XCTAssertEqual(resolved, 3); XCTAssertEqual(popup.phase, .collapsed)
         monitor.configure(enabled: true)
-        XCTAssertEqual(announcements.count, 3, "Unrelated settings updates must not reset popup identity")
+        XCTAssertEqual(resolved, 3, "Unrelated settings must not reload context")
         selected = tab(3); monitor.spaceChanged()
-        XCTAssertEqual(announcements.last, false, "A different Terminal window on another desktop must also return quietly")
         selected = tab(2); monitor.tick()
-        XCTAssertEqual(announcements.last, true)
+        XCTAssertEqual(resolved, 5); XCTAssertEqual(popup.phase, .collapsed)
+        selected = nil; monitor.tick()
+        selected = tab(2); monitor.tick()
+        XCTAssertEqual(resolved, 6); XCTAssertEqual(popup.phase, .collapsed)
         selected = TerminalTabSnapshot(output: "/dev/ttys002\n0\n0\n900\n600\nNew topic")!
-        monitor.tick(); XCTAssertEqual(announcements.last, true)
-        let count = announcements.count
+        monitor.tick(); XCTAssertEqual(resolved, 7)
         selected = TerminalTabSnapshot(output: "/dev/ttys002\n0\n0\n900\n600\n⠼ New topic")!
-        monitor.tick(); XCTAssertEqual(announcements.count, count)
-    }
-
-    func testTransientTabReadFailureDoesNotReplayNameOnRecovery() {
-        _ = NSApplication.shared
-        var selected: TerminalTabSnapshot? = tab(1), announcements = [Bool]()
-        let monitor = TerminalSessionMonitor(frontmost: { true }, readTab: { $0(selected) },
-            loadSession: { _, done in done(Session(id: "a", cwd: "/tmp", title: "Topic")) },
-            show: { _, _, announce in announcements.append(announce) }, hide: { _ in })
-        monitor.configure(enabled: true)
-        defer { monitor.configure(enabled: false) }
-        selected = nil; monitor.tick(); monitor.tick()
-        selected = tab(1); monitor.tick()
-        XCTAssertEqual(announcements, [true, false])
-        selected = tab(2); monitor.tick()
-        XCTAssertEqual(announcements, [true, false, true])
+        monitor.tick(); XCTAssertEqual(resolved, 7)
+        XCTAssertEqual(popup.phase, .collapsed, "Only hovering may reveal the name")
     }
 
     func testHoverPeeksAtNameWithoutFilesOrFocusAndLeavingCollapses() {
@@ -163,7 +156,7 @@ final class TerminalSessionPopupTests: XCTestCase {
         popup.contextEnded(.spaceChanged)
         XCTAssertEqual(popup.phase, .collapsed)
         XCTAssertFalse(popup.panel.canBecomeKey)
-        popup.show(Session(id: "a", cwd: "/tmp", title: "Topic"), tab: tab(1), announce: false)
+        popup.show(Session(id: "a", cwd: "/tmp", title: "Topic"), tab: tab(1))
         XCTAssertEqual(popup.phase, .collapsed, "A quiet restore must not replay the title")
     }
 
@@ -186,6 +179,7 @@ final class TerminalSessionPopupTests: XCTestCase {
         popup.show(session, tab: tab(1))
         defer { popup.hide() }
         let anchor = NSPoint(x: popup.panel.frame.maxX, y: popup.panel.frame.maxY)
+        popup.setHovering(true); settle()
         try capture(popup, name: "title-bubble")
         XCTAssertEqual(popup.phase, .title)
         XCTAssertTrue(browser.files.isEmpty, "The title bubble does not scan files")
@@ -220,11 +214,15 @@ final class TerminalSessionPopupTests: XCTestCase {
         popup.show(Session(id: "a", cwd: "/tmp", title: "Topic"), tab: tab(1))
         popup.collapse(restoreFocus: false); settle()
         popup.show(Session(id: "b", cwd: "/tmp/other", title: "Other topic"), tab: tab(2))
+        popup.setHovering(true)
+        let hover = expectation(description: "hover starts title animation")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) { hover.fulfill() }
+        wait(for: [hover], timeout: 1)
         let mark = try XCTUnwrap(popup.panel.contentView?.subviews.compactMap { $0 as? NSButton }.first { $0.image != nil })
         let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: mark.convert(NSPoint(x: 18, y: 18), to: nil), modifierFlags: [], timestamp: 0,
                                                    windowNumber: popup.panel.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
         XCTAssertTrue(mark.acceptsFirstMouse(for: event))
-        mark.mouseDown(with: event)
+        mark.performClick(nil)
         XCTAssertEqual(popup.phase, .expanded)
         XCTAssertEqual(popup.panel.frame.width, 380, "An explicit click must not wait for the title animation to finish")
         settle(); XCTAssertEqual(popup.phase, .expanded, "The old animation must not collapse the file menu later")

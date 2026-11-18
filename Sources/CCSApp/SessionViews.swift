@@ -1,6 +1,17 @@
 import AppKit
 import CCSCore
 
+extension SessionActivity {
+    var tint: NSColor {
+        switch self {
+        case .attention: return .systemOrange
+        case .busy: return .systemYellow
+        case .ready: return .systemGreen
+        case .unknown: return .secondaryLabelColor
+        }
+    }
+}
+
 final class PickerPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
@@ -14,10 +25,13 @@ final class PickerRow: NSTableRowView {
 }
 
 final class SessionCell: NSTableCellView {
-    init(session s: Session, recent: Bool) {
+    init(session s: Session, recent: Bool, terminalOpen: Bool? = nil) {
         super.init(frame: .zero)
-        let icon = NSImageView(image: NSImage(systemSymbolName: s.isSaved ? "circle" : s.status == "unknown" ? "questionmark.circle" : "circle.fill", accessibilityDescription: s.status)!)
-        icon.contentTintColor = s.status == "idle" ? .systemGreen : s.isSaved ? .secondaryLabelColor : s.status == "unknown" ? .systemPurple : .systemOrange
+        let confirmed = terminalOpen == true
+        let status = confirmed ? s.status : terminalOpen == false ? "No confirmed Terminal tab" : "Terminal status unavailable"
+        let icon = NSImageView(image: NSImage(systemSymbolName: confirmed ? "circle.fill" : terminalOpen == nil && !s.isSaved ? "questionmark.circle" : "circle", accessibilityDescription: status)!)
+        icon.contentTintColor = (confirmed ? SessionActivity(status: s.status) : .unknown).tint
+        icon.toolTip = status
         let title = NSTextField(labelWithString: s.displayTitle); title.font = .systemFont(ofSize: 13, weight: .medium); title.lineBreakMode = .byTruncatingTail
         let badge = NSTextField(labelWithString: " \(s.provider.title) ")
         badge.font = .systemFont(ofSize: 9, weight: .semibold); badge.textColor = s.provider == .codex ? .systemTeal : .systemOrange
@@ -37,7 +51,7 @@ final class SessionCell: NSTableCellView {
             age.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8), age.centerYAnchor.constraint(equalTo: centerYAnchor), age.widthAnchor.constraint(equalToConstant: 36),
             stats.trailingAnchor.constraint(equalTo: age.leadingAnchor, constant: -10), stats.centerYAnchor.constraint(equalTo: centerYAnchor)])
         stats.setContentCompressionResistancePriority(.required, for: .horizontal)
-        setAccessibilityLabel("\(s.displayTitle), \(s.provider.title), \(s.status), \(shortPath(s.cwd))\(s.provider == .claude ? ", \(s.turns) prompts" : "")")
+        setAccessibilityLabel("\(s.displayTitle), \(s.provider.title), \(status), \(shortPath(s.cwd))\(s.provider == .claude ? ", \(s.turns) prompts" : "")")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }

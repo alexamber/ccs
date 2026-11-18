@@ -4,6 +4,35 @@ import CCSCore
 @testable import CCSApp
 
 final class InteractionTests: XCTestCase {
+    func testClosedTerminalLosesGreenStatusAndOldLoadedHistoryRespectsDateRange() throws {
+        _ = NSApplication.shared
+        var session = Session(id: "loaded", cwd: "/tmp", mtime: Date().timeIntervalSince1970, provider: .codex)
+        session.status = "idle"
+        var snapshot = HistorySnapshot(sessions: [session], issues: [:], installedProviders: [.codex], terminalKeys: [session.key])
+        let popup = Popup(engine: Engine(environment: { [:] }), settings: Settings(), loadHistory: { $0(.success(snapshot)) })
+        func icon() throws -> NSImageView {
+            let cell = try XCTUnwrap(popup.tableView(NSTableView(), viewFor: nil, row: 0))
+            return try XCTUnwrap(cell.subviews.compactMap { $0 as? NSImageView }.first)
+        }
+        popup.refresh()
+        XCTAssertEqual(try icon().contentTintColor, .systemGreen)
+        var working = session; working.status = "active"
+        snapshot = HistorySnapshot(sessions: [working], issues: [:], installedProviders: [.codex], terminalKeys: [session.key])
+        popup.refresh()
+        XCTAssertEqual(try icon().contentTintColor, .systemYellow, "An open working session must not keep its idle green indicator")
+        snapshot.terminalKeys = []
+        popup.refresh()
+        XCTAssertEqual(try icon().contentTintColor, .secondaryLabelColor)
+        XCTAssertEqual(try icon().toolTip, "No confirmed Terminal tab")
+        snapshot.terminalKeys = nil
+        popup.refresh()
+        XCTAssertEqual(try icon().toolTip, "Terminal status unavailable")
+        var old = session; old.mtime = 1
+        snapshot = HistorySnapshot(sessions: [old], issues: [:], installedProviders: [.codex], terminalKeys: [])
+        popup.refresh()
+        XCTAssertNil(popup.selected, "A daemon-loaded conversation must not bypass the date filter")
+    }
+
     func testHistoryLoadsWhileHiddenAndSurvivesRapidReopening() {
         _ = NSApplication.shared
         var requests = [(Result<HistorySnapshot, Error>) -> Void]()

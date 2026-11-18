@@ -57,6 +57,9 @@ extension SessionService {
         let parts = result.out.components(separatedBy: "\u{1e}")
         let currentTTY = parts.first ?? ""
         let live = sessions.filter(\.isLive)
+        guard parts.count > 1 || result.out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw CCSError.message("Terminal returned an incomplete tab list. Refresh and try again.")
+        }
         guard parts.count > 1, !live.isEmpty || includeUnconfirmedCodex else {
             return TerminalSwitchContext(targets: [], currentKey: nil)
         }
@@ -66,8 +69,10 @@ extension SessionService {
         var currentKey: String?, keysByTTY = [String: String]()
         for record in parts.dropFirst() {
             let fields = record.components(separatedBy: "\u{1f}")
-            guard fields.count == 6, let tab = TerminalTabSnapshot(output: fields.joined(separator: "\n")),
-                  onlyTTY == nil || tab.tty == onlyTTY else { continue }
+            guard fields.count == 6, let tab = TerminalTabSnapshot(output: fields.joined(separator: "\n")) else {
+                throw CCSError.message("Terminal returned an unreadable tab. Refresh and try again.")
+            }
+            guard onlyTTY == nil || tab.tty == onlyTTY else { continue }
             let session = terminalSession(tty: tab.tty, title: tab.title, sessions: live, processList: processes.out, codexSocketPath: codexSocketPath)
             let process = CodexProvider.terminalProcess(tty: String(tab.tty.dropFirst(5)), processList: processes.out, arguments: processArguments)
             guard session != nil || (includeUnconfirmedCodex && process != nil) else { continue }

@@ -149,6 +149,36 @@ final class TerminalContextTests: XCTestCase {
         XCTAssertNil(service.session(inTerminalTab: tab, sessions: [session]))
     }
 
+    func testCodexResumeWithoutLaunchIDMatchesSelectedConversationButNeverGuesses() throws {
+        var words = ["codex", "resume"]
+        let service = SessionService(runner: { path, _, _, _ in
+            CommandResult(out: path == "/usr/sbin/lsof" ? "n/tmp/ccs" : "42 1 ttys001 codex resume")
+        }, arguments: { _ in words })
+        var session = Session(id: "abc", cwd: "/tmp/ccs", title: "Review terminal tab spec", provider: .codex)
+        session.status = "active"
+        func tab(_ title: String) throws -> TerminalTabSnapshot {
+            try XCTUnwrap(TerminalTabSnapshot(output: "/dev/ttys001\n0\n0\n900\n600\n" + title))
+        }
+        let selected = try tab("⠼ Review terminal tab spec | ccs")
+        for command in [["codex", "resume"], ["codex", "resume", "--last"], ["codex", "resume", "--all"]] {
+            words = command
+            XCTAssertEqual(service.session(inTerminalTab: selected, sessions: [session])?.key, session.key)
+            for title in ["", "Codex", "Resume a session", "Another topic | ccs"] {
+                XCTAssertNil(service.session(inTerminalTab: try tab(title), sessions: [session]))
+            }
+            var other = session; other.id = "other"
+            XCTAssertNil(service.session(inTerminalTab: selected, sessions: [session, other]))
+            other = session; other.cwd = "/tmp/other"
+            XCTAssertNil(service.session(inTerminalTab: selected, sessions: [other]))
+            other = session; other.status = "saved"
+            XCTAssertNil(service.session(inTerminalTab: selected, sessions: [other]))
+        }
+        for command in [["codex", "--remote", "ws://other-host", "resume"], ["codex", "resume", "different-id"]] {
+            words = command
+            XCTAssertNil(service.session(inTerminalTab: selected, sessions: [session]))
+        }
+    }
+
     func testPlainCodexProcessDetectionRejectsOtherCommandsAndMultipleClients() {
         let listing = "42 1 ttys001 codex\n43 1 ttys002 codex"
         for words in [["codex"], ["/bin/codex", "--cd", "/tmp/work", "--model=example"], ["codex", "--remote", "unix:///tmp/local"]] {
@@ -163,16 +193,39 @@ final class TerminalContextTests: XCTestCase {
             arguments: { _ in ["codex"] }))
     }
 
+    func testCodexDialogKeepsConfirmedIdentityAndAttentionStatusThroughBothBlinkPhases() throws {
+        let service = SessionService(runner: { path, _, _, _ in
+            CommandResult(out: path == "/usr/sbin/lsof" ? "n/tmp/work" : "42 1 ttys001 codex")
+        }, arguments: { _ in ["codex"] })
+        for status in ["waiting", "waiting_input"] {
+            var session = Session(id: "a", cwd: "/tmp/work", title: "Choose a color", provider: .codex)
+            session.status = status
+            for prefix in ["[ ! ] Action Required | ", "[ . ] Action Required | ", "● [ ! ] Action Required | "] {
+                let tab = try XCTUnwrap(TerminalTabSnapshot(output: "/dev/ttys001\n0\n0\n900\n600\n" + prefix + "Choose a color | work"))
+                let match = try XCTUnwrap(service.session(inTerminalTab: tab, sessions: [session]))
+                XCTAssertEqual(match.key, session.key)
+                XCTAssertEqual(SessionActivity(status: match.status), .attention)
+                XCTAssertEqual(tab.matchingTitle, "Choose a color | work")
+                var duplicate = session; duplicate.id = "b"
+                XCTAssertNil(service.session(inTerminalTab: tab, sessions: [session, duplicate]), "A dialog must not weaken ambiguous-topic checks")
+            }
+        }
+    }
+
     func testCodexNativeTitlesMatchWholeNamesAndConservativeTruncation() {
         let name = "Review terminal tab spec"
-        for title in [name, name + " | ccs", "⠼ " + name + " | ccs", "● ⠋ " + name + " | ccs", "[ ! ] Action Required " + name + " | ccs"] {
+        for title in [name, name + " | ccs", "⠼ " + name + " | ccs", "● ⠋ " + name + " | ccs", "[ ! ] Action Required " + name + " | ccs",
+                      "[ ! ] Action Required | " + name + " | ccs", "[ . ] Action Required | " + name + " | ccs",
+                      "● [ ! ] Action Required | " + name + " | ccs", "● [ . ] Action Required | " + name + " | ccs"] {
             XCTAssertTrue(CodexProvider.terminalTitle(title, matches: name))
         }
-        for title in ["Other " + name, name + " extra | ccs", "ccs", ""] {
+        for title in ["Other " + name, name + " extra | ccs", "ccs", "", "[ ! ] Action Required", "[ . ] Action Required",
+                      "[ ! ] Action Required | Other " + name + " | ccs", "[ ! ] Action Requiredness | " + name] {
             XCTAssertFalse(CodexProvider.terminalTitle(title, matches: name))
         }
         let long = String(repeating: "é", count: 55)
         XCTAssertTrue(CodexProvider.terminalTitle(String(long.prefix(45)) + "... | ccs", matches: long))
+        XCTAssertTrue(CodexProvider.terminalTitle("[ . ] Action Required | " + String(long.prefix(45)) + "... | ccs", matches: long))
         XCTAssertFalse(CodexProvider.terminalTitle(String(long.prefix(10)) + "... | ccs", matches: long))
     }
 

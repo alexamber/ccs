@@ -24,6 +24,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     private var reloading = false
     private var wantsFileFocus = false
     private var hasLoaded = false
+    private var terminalKeys: Set<String>?
     private var refreshError: String?
     private let loadHistory: (@escaping (Result<HistorySnapshot, Error>) -> Void) -> Void
     private var launching = false, issues = [Provider: String]()
@@ -185,6 +186,8 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
             return
         }
         // Keep the last snapshot searchable while fresh metadata is collected.
+        // Cached conversation metadata does not establish that its tab is still open.
+        terminalKeys = nil
         search.stringValue = ""; reload()
         let point = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(point, $0.frame, false) } ?? NSScreen.main ?? NSScreen.screens[0]
@@ -244,8 +247,9 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
             switch result {
             case .success(let payload):
                 self.sessions = payload.sessions; self.issues = payload.issues
+                self.terminalKeys = payload.terminalKeys
                 self.installedProviders = payload.installedProviders; self.hasLoaded = true
-            case .failure(let error): self.refreshError = error.localizedDescription
+            case .failure(let error): self.refreshError = error.localizedDescription; self.terminalKeys = nil
             }
             // Finishing while hidden still warms the next opening.
             self.reload()
@@ -257,7 +261,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         defer { reloading = false; if panel.isVisible { artifactBrowser.show(folder: selected?.cwd) } }
         let keep = selected?.key
         let cutoff = days == 0 ? 0 : Date().timeIntervalSince1970 - Double(days) * 86400
-        rows = sessionRows(sessions.filter { settings.enabledProviders.contains($0.provider) && settings.providerFilter.includes($0.provider) && ($0.isLive || $0.mtime >= cutoff) }, query: search.stringValue, recent: recent, tree: false)
+        rows = sessionRows(sessions.filter { settings.enabledProviders.contains($0.provider) && settings.providerFilter.includes($0.provider) && (terminalKeys?.contains($0.key) == true || $0.mtime >= cutoff) }, query: search.stringValue, recent: recent, tree: false)
         table.reloadData(); count.stringValue = "\(rows.filter { $0.session != nil }.count) sessions"
         empty.isHidden = rows.contains { $0.session != nil }; empty.stringValue = search.stringValue.isEmpty ? "No sessions in this range" : "No sessions match"
         if sessions.isEmpty, let installedProviders, installedProviders.isEmpty {
@@ -417,7 +421,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { rows[row].session == nil ? 26 : 48 }
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { PickerRow() }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        if let s = rows[row].session { return SessionCell(session: s, recent: recent) }
+        if let s = rows[row].session { return SessionCell(session: s, recent: recent, terminalOpen: terminalKeys.map { $0.contains(s.key) }) }
         let label = NSTextField(labelWithString: rows[row].label); label.font = .systemFont(ofSize: 11, weight: .semibold); label.textColor = .secondaryLabelColor; label.lineBreakMode = .byTruncatingMiddle
         return label
     }

@@ -22,6 +22,14 @@ final class CodexByteStream {
         _ = fcntl(output, F_SETNOSIGPIPE, 1)
     }
     func close() { let action = cleanup; cleanup = nil; action?() }
+    func hasInput(timeout: Int32) throws -> Bool {
+        if !buffered.isEmpty { return true }
+        var descriptor = pollfd(fd: input, events: Int16(POLLIN), revents: 0)
+        let result = poll(&descriptor, 1, timeout)
+        if result < 0 && errno == EINTR { return false }
+        guard result >= 0, descriptor.revents & Int16(POLLNVAL | POLLERR) == 0 else { throw codexTransportError }
+        return result > 0
+    }
     deinit { close() }
     private func wait(_ fd: Int32, _ events: Int16, until deadline: Date) throws {
         let remaining = deadline.timeIntervalSinceNow
@@ -79,6 +87,7 @@ final class CodexRPCConnection: CodexConnection {
     let isShared: Bool
     private let stream: CodexByteStream
     private var requestID = 0
+    var onNotification: (([String: Any]) -> Void)?
     init(stream: CodexByteStream, shared: Bool) throws {
         self.stream = stream; isShared = shared
         do {
@@ -108,8 +117,21 @@ final class CodexRPCConnection: CodexConnection {
                 guard let result = reply["result"] as? [String: Any] else { throw codexTransportError }
                 return result
             }
+            if reply["id"] == nil, reply["method"] != nil { onNotification?(reply) }
         }
         throw codexTransportError
+    }
+    /// Called only by the dedicated observer connection, never concurrently with request().
+    func nextNotification() throws -> [String: Any]? {
+        guard try stream.hasInput(timeout: 500) else { return nil }
+        let deadline = Date().addingTimeInterval(10)
+        let data = try isShared ? receiveFrame(until: deadline) : stream.line(until: deadline)
+        guard let message = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw codexTransportError }
+        if let id = message["id"], message["method"] != nil {
+            try send(["id": id, "error": ["code": -32601, "message": "CCS is a read-only observer"]], until: deadline)
+            return nil
+        }
+        return message["id"] == nil ? message : nil
     }
     private func send(_ object: [String: Any], until deadline: Date) throws {
         var data = try JSONSerialization.data(withJSONObject: object)

@@ -2,6 +2,16 @@ import CCSCore
 import Foundation
 import Darwin
 
+// Hook failures must never block or alter Claude's tool/approval behavior.
+if CommandLine.arguments.dropFirst().elementsEqual(["--ccs-activity-hook"]) {
+    var data = Data()
+    while data.count <= 1_048_576, let part = try? FileHandle.standardInput.read(upToCount: 16_384), !part.isEmpty { data.append(part) }
+    if let payload = ClaudeActivityHook.payload(data) {
+        DistributedNotificationCenter.default().postNotificationName(ClaudeActivityHook.notification, object: nil, userInfo: payload, deliverImmediately: true)
+    }
+    exit(0)
+}
+
 func openGUI(provider: ProviderFilter?) throws {
     var args = [try AppInstallation.findApp().path]
     if let provider { args += ["--args", "--provider", provider.rawValue] }

@@ -45,9 +45,9 @@ reused for ten seconds, with fresh process inspection and a metadata refresh on
 a miss. Unmatched tabs retry after five seconds; activity spinners do not trigger
 metadata loads. Ambiguous matches are discarded. The last observed tab/topic
 survives app deactivation, so returning to the same context restores only the
-compact icon. Native Space-change notifications collapse the panel in place and
-suppress the next name announcement, including another Terminal window on that
-Space. Reapplying unchanged popup settings does not reset this identity.
+compact icon. Native Space-change notifications collapse the panel in place.
+Tab switches and desktop returns never announce names; only hover reveals them.
+Reapplying unchanged popup settings does not reset this identity.
 Codex labels require one recognized interactive client on the tty and exactly one
 live conversation matching its folder and native title. A launch `resume ID` must
 agree with that match; it cannot resolve ambiguous titles or prove current identity.
@@ -55,18 +55,32 @@ Remote clients can receive labels only when connected to the local metadata sock
 This remains a conservative heuristic, not a provider-owned tty/thread mapping.
 There is at most one tab read and one metadata lookup in flight; generation checks
 discard results after a tab/app switch or settings change. A nonactivating
-panel shows a title oval for 2.5 seconds, pauses shrinking on hover, then collapses
-to a small persistent CCS bubble. Hovering the compact icon for 120 ms reveals the
+panel stays as a compact persistent unicorn. Hovering it for 120 ms reveals the
 name without keyboard focus or file discovery; leaving collapses it immediately.
 Clicking expands a searchable file selector and
 allows keyboard focus; resigning key collapses it. All phases retain the same
-upper-right Terminal anchor. A nonblocking 180 ms AppKit animation interpolates
+saved draggable anchor (initially near the upper-right of the display). A nonblocking 180 ms AppKit animation interpolates
 the frame and corner radius; interrupted transitions begin from the current frame.
 The unicorn mark remains visible throughout. The expanded selector fits up to five
 file rows and scrolls beyond that. PNG assets use SwiftPM resources in development
 and are copied into the signed app's Resources directory when packaging. The menu
 bar uses a monochrome template; the bubble uses the color artwork. The feature defaults off and
 uses the existing Apple-events permission, with no Accessibility observer.
+
+`SessionActivityCoordinator` owns activity delivery, transition tracking, unread
+notices, acknowledgement, and the notification timer. Provider adapters remain
+separate: Codex events and Claude hooks feed the same event/poll reconciliation
+used by five-second recovery reads. AppDelegate connects native UI callbacks;
+the coordinator delivers status and finished-state changes to the open overview.
+Alert preferences filter delivery without stopping monitoring or resetting its
+baseline. Muting clears queued notices, and unmuting does not replay observed
+changes. Disabling the unicorn or changing providers invalidates pending reads
+and resets notification state. Combined-flow tests exercise this coordination
+through the same interface used by AppDelegate, including delayed polling,
+muted transitions, direct Terminal acknowledgement, and provider changes. Events
+for unidentified tabs request an identity refresh; they never replay over a newer
+status snapshot. Once identified, events are delivered immediately and protect
+against older in-flight polling results.
 
 `ArtifactIndex` discovers documents from file metadata within the selected folder
 and two subdirectory levels, excluding symlinks, hidden files, packages, common

@@ -24,6 +24,8 @@ public struct Session: Codable, Identifiable {
     public var prompts: String
     public var status: String = "closed"
     public var live: LiveSession?
+    // Runtime-only turn metadata; never persisted in history or CLI exports.
+    public var activityTurn: SessionActivityTurn?
     private var storedProvider: Provider?
     public var provider: Provider {
         get { storedProvider ?? .claude }
@@ -51,7 +53,7 @@ public struct Session: Codable, Identifiable {
     public var folderTitle: String {
         cwd.isEmpty ? provider.title : cleanText(URL(fileURLWithPath: cwd).lastPathComponent).nonempty ?? provider.title
     }
-    public var isLive: Bool { live != nil || (provider == .codex && ["idle", "active", "waiting", "error"].contains(status)) }
+    public var isLive: Bool { live != nil || (provider == .codex && ["idle", "active", "waiting", "waiting_input", "error"].contains(status)) }
     public var isSaved: Bool { status == "closed" || status == "saved" }
     public var statistics: String {
         provider == .claude ? "\(turns)p\(cost.map { $0 > 0 ? " · $\(formattedCost($0))" : "" } ?? "")" : ""

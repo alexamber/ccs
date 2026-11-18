@@ -112,4 +112,23 @@ final class CodexTransportTests: XCTestCase {
         XCTAssertThrowsError(try client.request("thread/list", [:]))
         wait(for: [done], timeout: 5)
     }
+    func testObserverReceivesEventsWithoutPollingAndPreservesEventsDuringMetadataQueries() throws {
+        let (client, done) = try connection { peer in
+            try peer.frame(JSONSerialization.data(withJSONObject: ["method": "thread/status/changed", "params": ["threadId": "a", "status": ["type": "active"]]]))
+            let query = try peer.json()
+            XCTAssertEqual(query["method"] as? String, "thread/read")
+            try peer.frame(JSONSerialization.data(withJSONObject: ["method": "thread/status/changed", "params": ["threadId": "b", "status": ["type": "idle"]]]))
+            try peer.frame(JSONSerialization.data(withJSONObject: ["id": query["id"]!, "result": [:]]))
+        }
+        defer { client.close() }
+        let start = Date()
+        let event = try XCTUnwrap(client.nextNotification())
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1)
+        XCTAssertEqual((event["params"] as? [String: Any])?["threadId"] as? String, "a")
+        var received = [String]()
+        client.onNotification = { if let params = $0["params"] as? [String: Any], let id = params["threadId"] as? String { received.append(id) } }
+        _ = try client.request("thread/read", ["threadId": "a", "includeTurns": false])
+        XCTAssertEqual(received, ["b"])
+        wait(for: [done], timeout: 3)
+    }
 }

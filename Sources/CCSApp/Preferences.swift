@@ -18,6 +18,8 @@ final class Preferences: NSObject {
     private let folderHint = NSTextField(labelWithString: "")
     private let choose = NSButton(title: "Choose…", target: nil, action: nil)
     private let cleanup = NSSwitch(), login = NSSwitch(), terminalPopups = NSSwitch()
+    private let allSpaces = NSSwitch(), notifyAttention = NSSwitch(), notifyCompletion = NSSwitch()
+    private let notificationBubble = NSSwitch(), notificationWiggle = NSSwitch()
     private let cliIcon = NSImageView(), cliTitle = NSTextField(labelWithString: ""), cliDetail = NSTextField(labelWithString: "")
     private let cliAction = NSButton(title: "", target: nil, action: nil)
     private var environment = ProcessInfo.processInfo.environment
@@ -31,7 +33,7 @@ final class Preferences: NSObject {
 
     init(settings: Settings, engine: Engine) {
         self.settings = settings; self.engine = engine
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 458), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 680), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init()
         window.title = "CCS Settings"; window.isReleasedWhenClosed = false; window.center()
         shortcut.controlSize = .small; shortcut.font = .systemFont(ofSize: 12)
@@ -62,10 +64,19 @@ final class Preferences: NSObject {
             toggle.target = self; toggle.action = #selector(changeEnabledProviders)
         }
         cleanup.state = settings.cleanup ? .on : .off; cleanup.setAccessibilityLabel("Clean up empty session folders")
-        terminalPopups.setAccessibilityLabel("Show session when switching Terminal tabs")
-        terminalPopups.toolTip = "Show the session name at the upper-right of Terminal, then shrink to a CCS bubble. Click to search nearby files. Uses Terminal Automation permission."
+        terminalPopups.setAccessibilityLabel("Floating unicorn")
+        terminalPopups.toolTip = "Drag to position. Click for files; right-click for active sessions. Uses Terminal Automation permission."
+        allSpaces.setAccessibilityLabel("Show on every desktop")
+        notifyAttention.setAccessibilityLabel("Notify when a session needs attention")
+        notifyCompletion.setAccessibilityLabel("Notify when a session finishes working")
+        notificationBubble.setAccessibilityLabel("Show a small update bubble")
+        notificationWiggle.setAccessibilityLabel("Wiggle the unicorn")
+        notifyAttention.toolTip = "Show alerts when a session needs you. Turning alerts off keeps live status updates running."
+        notifyCompletion.toolTip = "Alert when work finishes; completion does not guarantee success. Turning alerts off keeps live status updates running."
+        notificationBubble.toolTip = "Separate speech bubbles, one at a time. Hover pauses the five-second timeout. Visiting a session acknowledges its updates."
+        notificationWiggle.toolTip = "A brief movement for a new update. Disabled automatically with Reduce Motion."
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off; login.setAccessibilityLabel("Start at login")
-        for control in [days as NSControl, grouping, cleanup, terminalPopups] {
+        for control in [days as NSControl, grouping, cleanup, terminalPopups, allSpaces, notifyAttention, notifyCompletion, notificationBubble, notificationWiggle] {
             control.controlSize = .small; control.font = .systemFont(ofSize: 12)
             control.target = self; control.action = #selector(changed)
         }
@@ -83,7 +94,10 @@ final class Preferences: NSObject {
         let sources = NSStackView(views: [claudeToggle, codexToggle]); sources.spacing = 14
         let newChoice = NSStackView(views: [newProvider, newProviderValue])
         let picker = section("Picker", rows: [row(label("Providers"), sources), row(label("Shortcut"), shortcut), row(label("Open with"), defaults), row(label("New sessions"), newChoice), row(label("Start at login"), login)])
-        let sessions = section("Sessions", rows: [row(folderText, choose, minimumHeight: 28), row(cleanupLabel, cleanup), row(label("Show session on Terminal tab switch"), terminalPopups)])
+        let sessions = section("Sessions", rows: [row(folderText, choose, minimumHeight: 28), row(cleanupLabel, cleanup)])
+        let unicorn = section("Floating unicorn", rows: [row(label("Show unicorn"), terminalPopups), row(label("Show on every desktop"), allSpaces),
+            row(label("Needs attention"), notifyAttention), row(label("Finished working"), notifyCompletion),
+            row(label("Small update bubble"), notificationBubble), row(label("Wiggle for updates"), notificationWiggle)])
         cliTitle.font = .systemFont(ofSize: 12, weight: .medium)
         cliDetail.font = .systemFont(ofSize: 10); cliDetail.textColor = .secondaryLabelColor; cliDetail.lineBreakMode = .byTruncatingMiddle
         let cliText = NSStackView(views: [cliTitle, cliDetail]); cliText.orientation = .vertical; cliText.alignment = .leading; cliText.spacing = 2
@@ -94,7 +108,7 @@ final class Preferences: NSObject {
         let version = label("CCS " + Product.version); version.font = .systemFont(ofSize: 10); version.textColor = .tertiaryLabelColor
         let help = NSButton(title: "Help", target: self, action: #selector(openHelp)); help.isBordered = false; help.font = .systemFont(ofSize: 11); help.contentTintColor = .linkColor
         let footer = row(version, help, minimumHeight: 16)
-        let stack = NSStackView(views: [picker, sessions, terminal, footer]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
+        let stack = NSStackView(views: [picker, sessions, unicorn, terminal, footer]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false; window.contentView!.addSubview(stack)
         for child in stack.arrangedSubviews { child.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
         NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 16), stack.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -16), stack.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 14), stack.bottomAnchor.constraint(lessThanOrEqualTo: window.contentView!.bottomAnchor, constant: -10)])
@@ -148,6 +162,13 @@ final class Preferences: NSObject {
         }
         cleanup.state = value.cleanup ? .on : .off
         terminalPopups.state = value.terminalPopups ? .on : .off
+        allSpaces.state = value.unicornAllSpaces ? .on : .off
+        notifyAttention.state = value.notifyAttention ? .on : .off
+        notifyCompletion.state = value.notifyCompletion ? .on : .off
+        notificationBubble.state = value.notificationBubble ? .on : .off
+        notificationWiggle.state = value.notificationWiggle ? .on : .off
+        for control in [allSpaces, notifyAttention, notifyCompletion] { control.isEnabled = value.terminalPopups }
+        for control in [notificationBubble, notificationWiggle] { control.isEnabled = value.terminalPopups && (value.notifyAttention || value.notifyCompletion) }
         refreshFolder()
     }
     @objc private func changeNewProvider() {
@@ -200,6 +221,9 @@ final class Preferences: NSObject {
         let old = settings
         settings.defaultDays = dateWindows[max(0, days.indexOfSelectedItem)]; settings.folders = grouping.selectedSegment == 1; settings.cleanup = cleanup.state == .on
         settings.terminalPopups = terminalPopups.state == .on
+        settings.unicornAllSpaces = allSpaces.state == .on
+        settings.notifyAttention = notifyAttention.state == .on; settings.notifyCompletion = notifyCompletion.state == .on
+        settings.notificationBubble = notificationBubble.state == .on; settings.notificationWiggle = notificationWiggle.state == .on
         do { try onSave?(settings) }
         catch { apply(old); showError(error, window: window) }
     }

@@ -30,7 +30,7 @@ public final class CodexProvider {
         else if path.hasPrefix("~/") { path = userHome + path.dropFirst() }
         return URL(fileURLWithPath: path)
     }
-    private func client() throws -> CodexConnection {
+    private func client(allowMetadata: Bool = true) throws -> CodexConnection {
         if let connection {
             let defaultSocket = home.appendingPathComponent("app-server-control/app-server-control.sock").path
             if !connection.isShared && (FileManager.default.fileExists(atPath: defaultSocket) || Date().timeIntervalSince(lastSharedProbe) >= 30) {
@@ -48,6 +48,7 @@ public final class CodexProvider {
             socketPath = path; connection = shared; return shared
         }
         socketPath = nil
+        guard allowMetadata else { throw CCSError.message("Codex live status unavailable.") }
         let metadata = try CodexRPCConnection.metadataProcess(environment: environment)
         connection = metadata; return metadata
     }
@@ -95,6 +96,50 @@ public final class CodexProvider {
             return session
         } catch { invalidate(); throw error }
     }
+    /// Only loaded threads. The latest turn's status catches short tasks between
+    /// samples; itemsView:notLoaded excludes messages and tool payloads.
+    func loadedSessions() throws -> [Session] {
+        guard enabled, hasSavedData || connector != nil else { return [] }
+        do { return try readLoadedSessions() }
+        catch { invalidate(); throw error }
+    }
+    private func readLoadedSessions() throws -> [Session] {
+        let client = try client(allowMetadata: false)
+        guard client.isShared else { throw CCSError.message("Codex live status unavailable.") }
+        var ids = Set<String>(), cursor: String?, cursors = Set<String>()
+        let deadline = Date().addingTimeInterval(15)
+        repeat {
+            guard Date() < deadline, ids.count < 1000 else { throw CCSError.message("Codex live status timed out.") }
+            var params: [String: Any] = ["limit": 100]
+            if let cursor { params["cursor"] = cursor }
+            let result = try client.request("thread/loaded/list", params)
+            guard let page = result["data"] as? [String] else { throw CCSError.message("Codex returned invalid live status.") }
+            ids.formUnion(page)
+            cursor = result["nextCursor"] as? String
+            if let cursor, !cursors.insert(cursor).inserted { throw CCSError.message("Codex returned a repeated live cursor.") }
+        } while cursor != nil
+        var turnReadFailed = false
+        let sessions = try ids.sorted().map { id in
+            guard Date() < deadline else { throw CCSError.message("Codex live status timed out.") }
+            var session = try current(id)
+            do {
+                let result = try client.request("thread/turns/list", ["threadId": id, "limit": 1,
+                    "sortDirection": "desc", "itemsView": "notLoaded"])
+                guard let turns = result["data"] as? [[String: Any]] else { throw CCSError.message("Invalid turn status.") }
+                if let turn = turns.first, let turnID = turn["id"] as? String, !turnID.isEmpty,
+                   let status = turn["status"] as? String {
+                    session.activityTurn = SessionActivityTurn(id: turnID, status: status)
+                }
+            } catch {
+                // Older servers may lack this metadata query. Live state remains
+                // useful; reconnect next time in case the transport failed.
+                turnReadFailed = true
+            }
+            return session
+        }
+        if turnReadFailed { invalidate() }
+        return sessions
+    }
     public var launchCommand: String { "env CODEX_HOME=" + shellQuote(home.path) + " codex" }
     public var cleanupEnvironment: String { "env CODEX_HOME=" + shellQuote(home.path) }
     func resumeCommand(_ session: Session) -> String {
@@ -133,7 +178,9 @@ public final class CodexProvider {
         if authoritative {
             switch type {
             case "idle": session.status = "idle"
-            case "active": session.status = (runtime["activeFlags"] as? [String] ?? []).contains("waitingOnApproval") ? "waiting" : "active"
+            case "active":
+                let flags = runtime["activeFlags"] as? [String] ?? []
+                session.status = flags.contains("waitingOnApproval") ? "waiting" : flags.contains("waitingOnUserInput") ? "waiting_input" : "active"
             case "systemError": session.status = "error"
             default: session.status = "saved"
             }
@@ -145,10 +192,11 @@ public final class CodexProvider {
         let directory: String?
         let launchSessionID: String?
         let remote: String?
-        let choosingSession: Bool
 
         func canMatchSession(localSocketPath: String?) -> Bool {
-            guard !choosingSession else { return false }
+            // `codex resume` keeps the same argv after choosing a conversation.
+            // Its current title and folder, not the absence of a launch ID,
+            // determine whether a live conversation can be identified.
             guard let remote else { return true }
             guard let localSocketPath else { return false }
             return remote == "unix://" || remote == "unix://" + localSocketPath
@@ -189,20 +237,27 @@ public final class CodexProvider {
                 if option == "--cd" || option == "-C" { directory = value }
                 index += 1
             }
-            if valid { found.append(TerminalProcess(pid: pid, directory: directory, launchSessionID: launchID,
-                                                    remote: remote, choosingSession: resume && launchID == nil)) }
+            if valid { found.append(TerminalProcess(pid: pid, directory: directory, launchSessionID: launchID, remote: remote)) }
         }
         return found.count == 1 ? found[0] : nil
     }
 
     static func normalizedTerminalTitle(_ nativeTitle: String) -> String {
         var title = cleanText(nativeTitle)
-        for prefix in ["[ ! ] Action Required ", "[ . ] Action Required "] where title.hasPrefix(prefix) {
-            title = String(title.dropFirst(prefix.count))
-        }
         let activity = Set("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏●")
-        while let first = title.first, activity.contains(first), title.dropFirst().first == " " {
-            title = String(title.dropFirst(2))
+        while true {
+            let previous = title
+            if let first = title.first, activity.contains(first), title.dropFirst().first == " " {
+                title = String(title.dropFirst(2))
+            }
+            for prefix in ["[ ! ] Action Required", "[ . ] Action Required"] {
+                if title == prefix { return "" }
+                // Codex joins the action marker, thread name, and project with
+                // " | ". Keep legacy space-only titles working as well.
+                if title.hasPrefix(prefix + " | ") { title = String(title.dropFirst(prefix.count + 3)); break }
+                if title.hasPrefix(prefix + " ") { title = String(title.dropFirst(prefix.count + 1)); break }
+            }
+            if title == previous { break }
         }
         return title
     }

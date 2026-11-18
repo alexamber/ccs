@@ -17,8 +17,9 @@ The installer defaults to `~/Applications`; pass `/Applications` to install ther
 instead. Existing app and CLI installations are backed up. CLI installation from
 the app is idempotent and backs up an older command before creating its symlink.
 
-Development outputs carry `-development` in their filenames and use ad-hoc
-signatures. Do not present them as notarized public releases.
+Development outputs carry `-development` in their filenames and default to ad-hoc
+signatures. Setting `CCS_SIGN_IDENTITY` signs them with that identity but does not
+notarize them. Do not present them as notarized public releases.
 
 ## Signing prerequisites
 
@@ -89,30 +90,32 @@ Claude/Codex versions and build number. Avoid testing with unsaved work at risk.
    picker and Option-Tab. Pass: distinct live conversations appear separately;
    choosing each returns to the correct conversation. Multiple viewers of one
    conversation may intentionally share one row.
-2. **Ordinary Terminal switching.** Enable the popup preference, then switch tabs
-   with Terminal's own shortcuts and by clicking. Pass: the bubble names the
-   selected conversation, keeps keyboard focus in Terminal, and shrinks. Hovering
-   reveals the name and leaving collapses it; clicking opens the correct folder's
-   files and moving the pointer away leaves them open. A plain shell tab gets no
-   session bubble. Switching apps and returning to the same tab does not replay
-   the name announcement.
+2. **Terminal context and hover.** Enable Show unicorn, then switch tabs with
+   Terminal's own shortcuts and by clicking. Pass: the icon stays compact until
+   hovered. Hover reveals the selected conversation without taking keyboard focus;
+   leaving collapses it. Clicking opens the correct folder's files, which remain
+   open when the pointer leaves. On a plain shell tab or outside Terminal, hover
+   shows no name and left-click does nothing. Right-click still opens active
+   sessions from any app. Tab changes and desktop returns never announce names.
 3. **Identity edge cases.** Rename a Codex tab, then separately change conversations
    inside a running Codex client. Pass: CCS either identifies the current
    conversation correctly or shows “Codex tab · Conversation unconfirmed” in
    Option-Tab, without a session popup. The generic row must still focus that tab.
-   Enter on an unmatched live conversation in the full picker must explain the
-   failure without opening another viewer. A wrong topic, wrong focus,
-   or unexpected extra viewer is a failure; record which action caused it.
+   Enter on a working or ambiguously matched conversation in the full picker must
+   explain the failure without opening another viewer. A closed, idle conversation
+   can reopen only after a successful tab scan finds no matching or unidentified
+   client. A wrong topic, wrong focus, or duplicate viewer is a failure.
 4. **Fast switching and cancellation.** Hold Option and tap Tab repeatedly; reverse
    with Shift; release Option. Then press Escape and immediately reopen/cancel.
    Pass: selection stays stable during a gesture, release focuses the highlighted
    conversation, and cancelled/older requests never cause a delayed switch.
    Close a test session while the chooser is open: it must not restart that session.
-5. **Spaces and displays.** With the bubble showing, swipe to a desktop without
-   Terminal and back. Repeat with a full-screen app and an external display if
-   available. Pass: the bubble does not follow onto unrelated desktops or appear
-   offscreen; returning to the desktop keeps the icon compact without replaying
-   the name. Switching a Terminal tab still announces the correct session.
+5. **Spaces, displays, and dragging.** With Show on every desktop enabled, swipe to
+   a desktop without Terminal and back. Repeat with a full-screen app and an
+   external display if available. Pass: the compact icon follows, but does not
+   replay a name. Disable that preference: it stays on one Space. Drag the icon
+   across displays, relaunch, and disconnect a display. Its position is remembered
+   and stays onscreen. A drag must not open files or a session.
 6. **Denied Automation.** In a separate macOS test account, refuse CCS's request
    to control Terminal (or disable it under Privacy & Security → Automation).
    Pass: session browsing still works; activation reports failure clearly; automatic
@@ -128,14 +131,26 @@ Claude/Codex versions and build number. Avoid testing with unsaved work at risk.
    optional popup/login settings, first permission request, and CLI installation
    work without development caches or prior permissions. Quit/relaunch and verify
    saved settings and that quitting releases the shortcuts.
-9. **Polling comparison.** On battery, keep Terminal frontmost with an idle session
-   for five minutes with popups off, then five minutes on, then off again. Keep
+9. **Energy comparison.** On battery, keep Terminal frontmost with an idle session
+   for five minutes with the unicorn off, then on, then off again. Keep
    screen brightness and workload similar. In Activity Monitor compare CCS's
    CPU/Energy Impact and its short-lived `osascript` children, not CCS alone.
-   Also bring another app forward: popup polling should stop. Sustained additional
+   Also bring another app forward: selected-tab polling stops, while enabled
+   background status updates continue. Sustained additional
    CPU, noticeable heat/fans, or a repeatable large energy increase requires
    profiling before release. This short test detects obvious regressions; it does
    not establish a precise battery-life percentage.
+10. **Updates and acknowledgement.** With attention and completion alerts enabled,
+    run work in two identified sessions while another app is focused. Trigger an
+    approval/input request and a completed turn. Pass: working is yellow, ready
+    green, attention orange. Each event shows its own message and session name in
+    a readable thought bubble. A second event waits its turn; hover pauses the
+    five-second timeout. Opening files, the active-session menu, or dragging pauses
+    delivery. Visit the session through Terminal's own controls for one second:
+    its unread dot/queued notices clear, while an unresolved attention status stays.
+    Clicking a notice focuses that session. Mute both alert types: statuses still
+    update, notices clear, and unmuting does not replay old events. Test both
+    providers; existing Claude clients may need to reload their hook configuration.
 
 Cases 3, 5 and 6 are particularly important: unit tests do not prove live provider
 identity, macOS Space behavior, or real privacy-permission recovery.

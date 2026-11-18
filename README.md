@@ -10,7 +10,7 @@ The Swift app and CLI share one engine. Neither Python nor Hammerspoon is needed
 
 ## Install
 
-Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v1.1.0/CCS-1.1.0-macos-universal.dmg),
+Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v1.2.0/CCS-1.2.0-macos-universal.dmg),
 drag CCS into Applications, and open it. Choose **Install Command-Line Tool** in
 the CCS menu to install the terminal picker too. Both Apple Silicon and Intel
 executables are included.
@@ -81,23 +81,68 @@ action, which also replaces any title you set by hand. Naming failures do not
 block a successful launch or focus. Browsing, exports, and picker refreshes do
 not rename tabs.
 
-For a brief popup when switching tabs directly in Terminal, enable Settings →
-**Show session on Terminal tab switch**. An oval at the upper-right of the Terminal
-window shows the session name for about 2.5 seconds, then shrinks to a small unicorn
-bubble. Hover over the compact icon briefly to reveal the name; moving away
-collapses it. Returning to the same tab or changing desktops does not replay the
-name announcement. Actual tab/topic changes still announce it. Click either bubble to expand a searchable file
-selector with the session name, folder, provider, and status. The expanded selector
+Enable Settings → **Floating unicorn → Show unicorn** for persistent access to
+active work. While Terminal is focused, hover over the compact icon to reveal the
+selected session's name; moving away collapses it. Tab switches and desktop changes
+do not announce names automatically. Click the icon or name to open files for that
+identified Terminal session, with its folder, provider, and status. Outside Terminal,
+hover shows no session name and left-click does nothing. The expanded selector
 takes keyboard focus; clicking away, Escape, or opening a file collapses it.
 Moving the pointer away does not close a file selector opened by clicking.
 The unicorn stays visible during a smooth 180 ms size-and-corner transition.
 The expanded view fits up to five file rows, scrolling for more. The small bubble
-remains available across apps on the same desktop for the last identified session;
-it does not follow you to other Spaces. Click its unicorn
-to expand or collapse. A monochrome unicorn also identifies CCS in the menu bar.
-**Open session picker…** opens its files in the full picker. The option is off by default and requires CCS to remain
+remains available across apps and, by default, all desktops. Turn off **Show on
+every desktop** to keep it on one Space. Drag the unicorn to move it; CCS remembers
+its position and keeps it within a connected display. A monochrome unicorn also
+identifies CCS in the menu bar.
+**Open session picker…** opens its files in the full picker. The unicorn is off by default and requires CCS to remain
 running in the menu bar. It uses the existing Terminal Automation permission;
 Accessibility permission is not needed.
+
+Right-click the unicorn (or Control-click), from any app, for active Terminal sessions, ordered
+by **Needs attention**, **Working**, **Ready**, and **Status unavailable**, newest
+activity first within each group. Claude recency combines known history timestamps
+with observed live-state changes. Selecting a row validates and focuses its tab;
+it never starts a replacement session. Compact rows show colored status dots and
+text labels, with up to twelve sessions visible and scrolling for the rest. Recent
+snapshots appear immediately while a fresh read runs; quick reopenings reuse the
+same read. Once you navigate or move into the list, refreshes update statuses in
+place. Use the refresh control to apply a changed order or show newly found rows.
+
+Optional updates use a read-only Codex daemon event connection and managed Claude
+hooks. They remain active across apps and desktops. Events update confirmed
+sessions without waiting for the full status scan. Five-second status checks remain
+as recovery when events are unavailable; these can take longer if a provider is
+slow. Neither path enumerates history or scans report folders. Codex reads only
+metadata and the latest turn's ID/status, excluding message and tool contents.
+
+Each event appears in a separate speech bubble pointing at the unicorn, with the
+event and session name. Notices queue in arrival order, show for five seconds each,
+and pause while hovered. Clicking the speech bubble opens that session; the icon
+keeps its normal behavior. Opening a menu, dragging, or browsing files pauses delivery
+instead of dropping notices. Visiting an identified session in foreground Terminal
+for one second acknowledges its updates and skips queued notices for it, however you
+switched there. Resolved waiting notices are removed; later completions remain.
+Opening the active-session list alone does not acknowledge anything. A purple dot
+marks unread updates. Attention status remains until the provider resolves it,
+even after its notification has been read.
+
+**Finished working** reports a completed turn or an observed working-to-idle
+transition when turn metadata is unavailable. It does not guarantee task success.
+Startup and unchanged states stay quiet. Unknown or unconfirmed tabs cannot
+produce reliable conversation-specific notifications or acknowledgments.
+
+Settings independently control attention and completion updates, the text bubble,
+and the wiggle. Reduce Motion suppresses the wiggle. Turning off both update types
+mutes alerts and clears queued notices while live status continues to update.
+Turning alerts back on does not replay changes observed while muted. Disable the
+unicorn to stop automatic status checks and event listening.
+CCS adds only its own command hooks to Claude's settings and removes those hooks
+when the Claude provider or the unicorn is disabled, preserving other hooks and
+settings. Hook payloads contain only session identity, folder, event, and time;
+they never forward messages or tool inputs. Existing Claude sessions may need to
+reload hook configuration. No sound,
+notification permission, or remote summarization is used.
 
 While enabled, CCS checks the selected tab about every quarter-second only while
 Terminal is frontmost. It reuses session metadata for up to ten seconds, with
@@ -107,7 +152,8 @@ Unknown or ambiguous tabs produce no popup. Claude sessions can be started outsi
 CCS. Codex labels require a recognized interactive client and exactly one live
 conversation matching its folder and native tab title. If the client was launched
 with `resume ID`, that ID must agree too; launch arguments alone are not proof of
-the current conversation. Renamed tabs, conflicting IDs, unsupported launch options,
+the current conversation. Sessions selected through `codex resume` without an ID
+use the same title and folder checks. Renamed tabs, conflicting IDs, unsupported launch options,
 or unavailable metadata can prevent a label. Switching quickly can skip intermediate
 tabs. Popups never rename tabs or open a session.
 
@@ -186,12 +232,23 @@ omitted. Integration was verified with Codex CLI 0.167.0.
 
 When available, CCS reads live status from the existing local Codex daemon. If it
 can only read saved metadata, rows show unknown live status. Enter focuses a
-matched live Terminal tab or resumes a conversation confirmed as saved. If the
-live tab cannot be identified, or live status is unknown, CCS explains the problem
-and opens no additional viewer. Use Option-Tab for an unconfirmed open client, or
+matched live Terminal tab or resumes a conversation confirmed as saved. An idle
+conversation may stay loaded after its tab closes: CCS can reopen it after a
+successful tab scan finds neither a matching tab nor an unidentified Codex client.
+Working conversations, ambiguous tabs, and failed status checks still block an
+automatic reopen. Use Option-Tab for an unconfirmed open client, or
 resume it directly in Codex. A new view does not submit a prompt. Codex desktop-window focus
 is outside this release. CCS never resumes threads or starts model turns merely
 to list history. See the [official app-server documentation](https://learn.chatgpt.com/docs/app-server).
+
+In the native picker, colored dots require a confirmed open Terminal tab. A hollow
+circle means no tab was confirmed; a question mark means tab status is unavailable.
+Native session indicators use yellow for working, green for ready, and orange for
+attention. The open unicorn session menu receives status changes as they arrive,
+without moving rows while you are interacting with it.
+The picker checks tabs during its five-second refresh while open, and checks
+again when opening a conversation. Codex’s loaded status alone never turns a
+native picker row green.
 
 ## Terminal CLI
 

@@ -92,30 +92,57 @@ final class CodexTests: XCTestCase {
             XCTAssertEqual(process?.canMatchSession(localSocketPath: "/tmp/socket"), false)
         }
     }
-    func testCodexActivationNeverResumesAnUnmatchedLiveOrUnknownConversation() throws {
+    func testCodexActivationReattachesAnIdleConversationAfterItsTabCloses() throws {
         var entry = record("abc", cwd: "/tmp/project", status: "idle")
         let client = MockCodexConnection { method, _ in
             method == "thread/list" ? ["data": [entry]] : ["thread": entry]
         }
         var launched = 0
-        let service = SessionService(runner: { path, _, script, _ in
+        let service = SessionService(runner: { path, args, script, _ in
             if path == "/bin/ps" { return CommandResult(out: "") }
             if script == SessionService.switchTabsScript { return CommandResult(out: "") }
             XCTAssertEqual(script, SessionService.launchScript)
+            if launched < 2 { XCTAssertTrue(args.last?.contains("resume 'abc'") == true) }
             launched += 1; return CommandResult(out: "ok")
         }, codex: CodexProvider(connector: { client }))
         let session = try CodexProvider.session(entry, authoritative: true)
-        XCTAssertThrowsError(try service.activate(session))
-        XCTAssertEqual(launched, 0)
+        try service.activate(session)
+        XCTAssertEqual(launched, 1, "Loaded is not the same as attached to a Terminal tab")
         entry["status"] = ["type": "notLoaded"]
         try service.activate(session)
-        XCTAssertEqual(launched, 1, "An authoritatively closed conversation can resume")
+        XCTAssertEqual(launched, 2, "An authoritatively closed conversation can resume")
         try service.activate(session, fresh: true)
-        XCTAssertEqual(launched, 2)
+        XCTAssertEqual(launched, 3)
         let unknown = SessionService(runner: { _, _, _, _ in
             XCTFail("Unknown live state must not launch a viewer"); return CommandResult()
         }, codex: CodexProvider(connector: { MockCodexConnection(shared: false) { _, _ in ["thread": entry] } }))
         XCTAssertThrowsError(try unknown.activate(session))
+    }
+
+    func testCodexReattachRefusesAmbiguousTabsActiveTurnsAndFailedScans() throws {
+        var entry = record("abc", status: "idle")
+        var tabResult = CommandResult(out: "/dev/ttys001\u{1e}/dev/ttys001\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}Renamed tab")
+        let client = MockCodexConnection { method, _ in
+            method == "thread/list" ? ["data": [entry]] : ["thread": entry]
+        }
+        let service = SessionService(runner: { path, _, script, _ in
+            if path == "/bin/ps" { return CommandResult(out: "123 1 ttys001 codex") }
+            if script == SessionService.switchTabsScript { return tabResult }
+            XCTFail("Must not launch or focus an unconfirmed conversation")
+            return CommandResult()
+        }, codex: CodexProvider(connector: { client }), arguments: { _ in ["codex"] })
+        let session = try CodexProvider.session(entry, authoritative: true)
+        XCTAssertThrowsError(try service.activate(session), "An unidentified client may already contain this conversation")
+        for result in [CommandResult(code: 1, err: "Automation denied"), CommandResult(out: "incomplete"),
+                       CommandResult(out: "/dev/ttys001\u{1e}malformed")] {
+            tabResult = result
+            XCTAssertThrowsError(try service.activate(session))
+        }
+        tabResult = CommandResult(out: "")
+        for status in ["active", "waiting", "error"] {
+            entry["status"] = ["type": status]
+            XCTAssertThrowsError(try service.activate(session), "A non-idle conversation cannot implicitly resume")
+        }
     }
 
     func testCleanupPreservesArchivedAndSubagentFoldersAndFailsClosed() throws {

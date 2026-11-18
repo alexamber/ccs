@@ -117,6 +117,13 @@ public final class SessionService {
             guard codex.historyAvailable else { throw CCSError.message("Couldn’t verify existing Codex tabs. Refresh and try again.") }
             let context = try terminalSwitchContext(sessions: sessions)
             guard let target = context.targets.first(where: { $0.session?.key == current.key }) else {
+                // A shared server keeps idle conversations loaded after their client exits.
+                // Reattach only after a successful tab scan, with no unidentified client
+                // that could already be displaying this conversation.
+                if current.status == "idle", !context.targets.contains(where: { $0.session == nil }) {
+                    try openTerminal(codex.resumeCommand(current), title: current.terminalTitle)
+                    return
+                }
                 throw CCSError.message("Couldn’t identify this conversation’s Terminal tab. Use Option-Tab to select an open Codex tab. No additional tab was opened.")
             }
             let focus = try runner("/usr/bin/osascript", ["-", current.terminalTitle, target.tab.tty], Self.focusScript, 5)

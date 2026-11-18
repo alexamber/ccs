@@ -1,5 +1,6 @@
 import AppKit
 import CCSCore
+import QuartzCore
 
 /// All state lives on the main thread. Polls and metadata work are asynchronous;
 /// each permits only one in-flight request, even during rapid tab switching.
@@ -11,19 +12,20 @@ final class TerminalSessionMonitor {
     private let now: () -> Date
     private let readTab: ReadTab
     private let loadSession: LoadSession
-    private let show: (Session, TerminalTabSnapshot, Bool) -> Void
+    private let show: (Session, TerminalTabSnapshot) -> Void
     private let hide: (Dismissal) -> Void
     private var observer: NSObjectProtocol?, spaceObserver: NSObjectProtocol?, timer: Timer?
     private var enabled = false, reading = false, resolving = false, needsResolve = false
     private var current: TerminalTabSnapshot?, lastObserved: TerminalTabSnapshot?
-    private var lastSessionKey: String?, announce = true, quietSpaceReturn = false
+    private var lastSessionKey: String?
     private var revision = 0
     private var retryAfter: Date?
+    var onFocus: ((String?) -> Void)?
 
     init(frontmost: @escaping () -> Bool = { NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Terminal" },
          now: @escaping () -> Date = Date.init,
          readTab: @escaping ReadTab, loadSession: @escaping LoadSession,
-         show: @escaping (Session, TerminalTabSnapshot, Bool) -> Void, hide: @escaping (Dismissal) -> Void) {
+         show: @escaping (Session, TerminalTabSnapshot) -> Void, hide: @escaping (Dismissal) -> Void) {
         self.frontmost = frontmost; self.now = now; self.readTab = readTab; self.loadSession = loadSession
         self.show = show; self.hide = hide
         observer = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
@@ -38,7 +40,6 @@ final class TerminalSessionMonitor {
     }
     func spaceChanged() {
         guard enabled else { return }
-        quietSpaceReturn = true
         stop(.spaceChanged)
         updateActivity()
     }
@@ -57,9 +58,10 @@ final class TerminalSessionMonitor {
         tick()
     }
     private func stop(_ reason: Dismissal) {
+        onFocus?(nil)
         timer?.invalidate(); timer = nil
         revision += 1; current = nil; needsResolve = false; retryAfter = nil
-        if reason == .disabled { lastObserved = nil; lastSessionKey = nil; announce = true; quietSpaceReturn = false }
+        if reason == .disabled { lastObserved = nil; lastSessionKey = nil }
         hide(reason)
     }
     func tick() {
@@ -72,6 +74,7 @@ final class TerminalSessionMonitor {
             self.reading = false
             guard self.enabled, self.frontmost(), request == self.revision else { return }
             guard let snapshot else {
+                self.onFocus?(nil)
                 // An Apple event can fail during activation/Space transitions.
                 // Hide stale content, but do not turn recovery into a new topic.
                 if self.current != nil {
@@ -83,10 +86,10 @@ final class TerminalSessionMonitor {
             let returning = self.current == nil
             let changed = self.lastObserved?.tty != snapshot.tty || self.lastObserved?.matchingTitle != snapshot.matchingTitle
             self.current = snapshot; self.lastObserved = snapshot
+            self.onFocus?(changed || returning || self.resolving ? nil : self.lastSessionKey)
             guard changed || returning || self.retryAfter.map({ self.now() >= $0 }) == true else { return }
             if changed {
-                if !returning { self.quietSpaceReturn = false }
-                self.revision += 1; self.announce = true; self.hide(.tabChanged)
+                self.revision += 1; self.hide(.tabChanged)
             }
             self.retryAfter = nil
             self.needsResolve = true
@@ -102,11 +105,11 @@ final class TerminalSessionMonitor {
             self.resolving = false
             if self.enabled, self.frontmost(), request == self.revision, let snapshot = self.current {
                 if let session {
-                    let announce = !self.quietSpaceReturn && (self.announce || self.lastSessionKey != session.key)
-                    self.lastSessionKey = session.key; self.announce = false; self.quietSpaceReturn = false
-                    self.show(session, snapshot, announce)
+                    self.lastSessionKey = session.key
+                    self.onFocus?(session.key)
+                    self.show(session, snapshot)
                 }
-                else { self.retryAfter = self.now().addingTimeInterval(5) }
+                else { self.lastSessionKey = nil; self.onFocus?(nil); self.retryAfter = self.now().addingTimeInterval(5) }
             }
             self.resolve()
         }
@@ -120,6 +123,8 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         private var displayObserver: NSObjectProtocol?
         private var hoverArea: NSTrackingArea?
         var onHover: ((Bool) -> Void)?
+        var onContextMenu: (() -> Void)?
+        var onPointerDown: ((NSEvent) -> Void)?, onPointerMove: ((NSEvent) -> Void)?, onPointerUp: ((NSEvent) -> Void)?
         override init(frame: NSRect) {
             super.init(frame: frame)
             wantsLayer = true; layer?.cornerRadius = 12; layer?.cornerCurve = .continuous
@@ -146,6 +151,13 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         }
         override func mouseEntered(with event: NSEvent) { onHover?(true) }
         override func mouseExited(with event: NSEvent) { onHover?(false) }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override func rightMouseDown(with event: NSEvent) { onContextMenu?() }
+        override func mouseDown(with event: NSEvent) {
+            if event.modifierFlags.contains(.control) { onContextMenu?() } else { onPointerDown?(event) }
+        }
+        override func mouseDragged(with event: NSEvent) { onPointerMove?(event) }
+        override func mouseUp(with event: NSEvent) { onPointerUp?(event) }
         override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); updateAppearance() }
         func setCornerRadius(_ radius: CGFloat) {
             layer?.cornerRadius = radius; material.layer?.cornerRadius = radius
@@ -154,12 +166,28 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
             material.alphaValue = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency ? 1 : 0.9
         }
     }
-    /// Commit on mouse-down: the panel can resize between mouse-down and up.
     private final class BubbleButton: NSButton {
+        var onContextMenu: (() -> Void)?
+        var onPointerDown: ((NSEvent) -> Void)?, onPointerMove: ((NSEvent) -> Void)?
+        var onPointerUp: ((NSEvent) -> Bool)?
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override func rightMouseDown(with event: NSEvent) { onContextMenu?() }
         override func mouseDown(with event: NSEvent) {
             guard isEnabled else { return }
-            if let action { sendAction(action, to: target) }
+            if event.modifierFlags.contains(.control) { onContextMenu?(); return }
+            onPointerDown?(event)
+        }
+        override func mouseDragged(with event: NSEvent) { onPointerMove?(event) }
+        override func mouseUp(with event: NSEvent) {
+            if isEnabled, onPointerUp?(event) == true, let action { sendAction(action, to: target) }
+        }
+    }
+    private final class UpdateIndicator: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func viewDidChangeEffectiveAppearance() {
+            super.viewDidChangeEffectiveAppearance()
+            layer?.backgroundColor = NSColor.systemPurple.withAlphaComponent(0.85).cgColor
+            layer?.borderColor = NSColor.windowBackgroundColor.cgColor
         }
     }
     private final class Label: NSTextField {
@@ -205,29 +233,46 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
     private var surfaceWidth: NSLayoutConstraint!, surfaceHeight: NSLayoutConstraint!
     private var markTop: NSLayoutConstraint!
     private var session: Session?, tab: TerminalTabSnapshot?
-    private var hovering = false, hoverPreview = false
+    private var hovering = false
     private var hoverDelay: DispatchWorkItem?
-    private var dismissal: DispatchWorkItem?, artifactTimer: Timer?
-    private var presentation = 0
+    private var artifactTimer: Timer?
     private var previousApplication: NSRunningApplication?
+    private var persistent = false
+    private var overviewPresented = false
+    let speech = SessionSpeechBubble()
+    private var lastNotificationID: UUID?
+    private var terminalContextActive = false
+    let updateIndicator: NSView = UpdateIndicator()
+    private var drag = BubbleDrag()
+    private var interruptedTransition = false
+    private let saveAnchor: (NSPoint) -> Void
+    private var placement: NSPoint?
+    private var screenObserver: NSObjectProtocol?
     var onBrowseFiles: ((Session) -> Void)?
+    var onShowSessions: ((NSView) -> Void)?
+    var onNotificationOpen: ((TerminalSwitchTarget) -> Void)?
+    var onNotificationHover: ((Bool) -> Void)?
+    var onDragStart: (() -> Void)?
 
-    init(artifactBrowser: ArtifactBrowser? = nil, folderButton: FolderButton = FolderButton()) {
+    init(artifactBrowser: ArtifactBrowser? = nil, folderButton: FolderButton = FolderButton(),
+         saveAnchor: @escaping (NSPoint) -> Void = { UserDefaults.standard.set(["x": $0.x, "y": $0.y], forKey: "unicornAnchor") }) {
+        self.saveAnchor = saveAnchor
         self.folderButton = folderButton
         self.artifactBrowser = artifactBrowser ?? ArtifactBrowser(showLocation: false, visibleRowLimit: 5)
         panel = Panel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 56),
                       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         super.init()
+        speech.onHover = { [weak self] value in self?.onNotificationHover?(value) }
+        speech.onOpen = { [weak self] update in self?.onNotificationOpen?(update.target) }
         folderButton.onOpened = { [weak self] in self?.collapse(restoreFocus: false) }
         panel.delegate = self; panel.isReleasedWhenClosed = false; panel.isFloatingPanel = true
         (panel as? Panel)?.onCancel = { [weak self] in self?.collapse() }
         panel.hidesOnDeactivate = false; panel.level = .floating
-        // Keep this contextual panel on its own Space; it must not follow a
-        // swipe to another desktop like the explicitly invoked picker does.
         panel.collectionBehavior = [.fullScreenAuxiliary, .transient]
         panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = true
         panel.contentView = surface
         surface.onHover = { [weak self] in self?.setHovering($0) }
+        surface.onContextMenu = { [weak self] in self?.showSessions() }
         for button in [intro, bubble] {
             button.isBordered = false; button.font = .systemFont(ofSize: 13, weight: .semibold)
             button.target = self; button.action = #selector(expand)
@@ -300,6 +345,32 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         mark.target = self; mark.action = #selector(toggleExpansion)
         mark.setAccessibilityLabel("CCS session files. Hover for name; click for files.")
         mark.translatesAutoresizingMaskIntoConstraints = false; surface.addSubview(mark)
+        mark.wantsLayer = true
+        for button in [intro, bubble, mark] { button.onContextMenu = { [weak self] in self?.showSessions() } }
+        for button in [intro, bubble, mark] {
+            button.onPointerDown = { [weak self] _ in
+                self?.beginPointerInteraction(at: NSEvent.mouseLocation)
+            }
+            button.onPointerMove = { [weak self] _ in
+                self?.movePointerInteraction(to: NSEvent.mouseLocation)
+            }
+            button.onPointerUp = { [weak self] _ in
+                self?.endPointerInteraction(at: NSEvent.mouseLocation) ?? false
+            }
+        }
+        surface.onPointerDown = mark.onPointerDown; surface.onPointerMove = mark.onPointerMove
+        surface.onPointerUp = { [weak self] _ in
+            guard let self else { return }
+            if self.endPointerInteraction(at: NSEvent.mouseLocation) { self.toggleExpansion() }
+        }
+        updateIndicator.wantsLayer = true; updateIndicator.layer?.cornerRadius = 4.5
+        updateIndicator.layer?.backgroundColor = NSColor.systemPurple.withAlphaComponent(0.85).cgColor
+        updateIndicator.layer?.borderWidth = 1.5; updateIndicator.layer?.borderColor = NSColor.windowBackgroundColor.cgColor
+        updateIndicator.isHidden = true; updateIndicator.translatesAutoresizingMaskIntoConstraints = false
+        updateIndicator.setAccessibilityElement(false); surface.addSubview(updateIndicator)
+        NSLayoutConstraint.activate([updateIndicator.trailingAnchor.constraint(equalTo: mark.trailingAnchor, constant: 3),
+            updateIndicator.bottomAnchor.constraint(equalTo: mark.bottomAnchor, constant: 3),
+            updateIndicator.widthAnchor.constraint(equalToConstant: 9), updateIndicator.heightAnchor.constraint(equalToConstant: 9)])
         markTop = mark.topAnchor.constraint(equalTo: surface.topAnchor, constant: 10)
         NSLayoutConstraint.activate([
             mark.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -10),
@@ -310,31 +381,125 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         surfaceHeight = surface.heightAnchor.constraint(equalToConstant: 56)
         NSLayoutConstraint.activate([surfaceWidth, surfaceHeight])
         setPhase(.collapsed, animate: false)
+        screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.panel.isVisible else { return }
+            self.setPhase(self.phase, animate: false)
+        }
     }
-    func show(_ session: Session, tab: TerminalTabSnapshot, announce: Bool = true) {
+    deinit { if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) } }
+    func configureFloating(enabled: Bool, allSpaces: Bool) {
+        persistent = enabled
+        panel.collectionBehavior = allSpaces ? [.canJoinAllSpaces, .fullScreenAuxiliary, .transient] : [.fullScreenAuxiliary, .transient]
+        guard enabled else { hide(); return }
+        if placement == nil, let saved = UserDefaults.standard.dictionary(forKey: "unicornAnchor"),
+           let x = saved["x"] as? Double, let y = saved["y"] as? Double, x.isFinite, y.isFinite { placement = NSPoint(x: x, y: y) }
+        if !panel.isVisible { showLauncher(clearSession: false) }
+        if placement == nil { placement = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY) }
+    }
+    func moveAnchor(to point: NSPoint) {
+        guard point.x.isFinite, point.y.isFinite else { return }
+        placement = point; setPhase(phase, animate: false)
+        placement = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
+    }
+    func beginPointerInteraction(at point: NSPoint) {
+        interruptedTransition = morph?.isAnimating == true
+        morph?.stop(); morph = nil; morphRevision += 1
+        hoverDelay?.cancel()
+        mark.layer?.removeAnimation(forKey: "session-update")
+        let anchor = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
+        let onCompactBubble = (0...56).contains(anchor.x - point.x) && (0...56).contains(anchor.y - point.y)
+        // Grabbing the expanded name/card should bring the compact unicorn
+        // under that grip, rather than leave it hundreds of points to the side.
+        drag.begin(at: point, anchor: onCompactBubble ? anchor : NSPoint(x: point.x + 28, y: point.y + 28))
+    }
+    func movePointerInteraction(to point: NSPoint) {
+        let wasDragging = drag.didDrag
+        guard let anchor = drag.move(to: point) else { return }
+        if !wasDragging {
+            onDragStart?(); overviewPresented = false
+            stopLoading(); speech.hide(); hovering = false
+            intro.title = session?.terminalTitle ?? "CCS · Your active work"
+            interruptedTransition = false
+            placement = anchor
+            setPhase(.collapsed, animate: false, duringDrag: true)
+            panel.resignKey()
+        }
+        placement = anchor
+        // Move only the window during the gesture. Rebuilding constraints for
+        // every mouse event adds latency and lets hover/layout work fight the drag.
+        panel.setFrameOrigin(NSPoint(x: anchor.x - panel.frame.width, y: anchor.y - panel.frame.height))
+    }
+    /// Returns true only for a click; crossing the drag threshold consumes the
+    /// gesture even if the pointer subsequently returns to its starting position.
+    @discardableResult func endPointerInteraction(at point: NSPoint) -> Bool {
+        guard drag.isTracking else { return false }
+        movePointerInteraction(to: point)
+        let moved = drag.didDrag
+        drag.reset()
+        if moved {
+            placement = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
+            setPhase(.collapsed, animate: false)
+            placement = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
+            saveAnchor(placement!)
+        }
+        return !moved
+    }
+    func setUpdateCount(_ count: Int) {
+        updateIndicator.isHidden = count == 0
+        let help = count == 0 ? "Drag to move. Right-click for active sessions." : "\(count) session update\(count == 1 ? "" : "s"). Right-click to review."
+        mark.toolTip = help; mark.setAccessibilityHelp(help)
+    }
+    var canShowNotification: Bool { persistent && panel.isVisible && !drag.isTracking && !overviewPresented && phase != .expanded }
+    func notify(_ update: SessionUpdate, bubble: Bool, wiggle: Bool) {
+        guard canShowNotification else { speech.hide(); return }
+        if lastNotificationID != update.id, wiggle, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            let motion = CAKeyframeAnimation(keyPath: "transform.rotation.z")
+            motion.values = [0, -0.12, 0.10, -0.06, 0]; motion.duration = 0.45
+            mark.layer?.add(motion, forKey: "session-update")
+        }
+        lastNotificationID = update.id
+        if bubble { speech.show(update, beside: panel, anchor: panel.convertToScreen(mark.convert(mark.bounds, to: nil))) }
+        else { speech.hide() }
+    }
+    private func showLauncher(clearSession: Bool) {
+        stopLoading()
+        if clearSession { session = nil; tab = nil }
+        intro.title = session?.terminalTitle ?? "CCS · Your active work"
+        intro.toolTip = session == nil ? "Right-click for active sessions" : "Click for files; right-click for active sessions"
+        setPhase(.collapsed, animate: false)
+        panel.orderFrontRegardless()
+    }
+    func showSessions() {
+        stopLoading(); speech.hide(); hovering = false
+        setPhase(.collapsed, animate: false)
+        overviewPresented = true
+        onShowSessions?(mark)
+    }
+    func sessionOverviewClosed() { overviewPresented = false; hovering = false }
+    func show(_ session: Session, tab: TerminalTabSnapshot) {
+        terminalContextActive = true
         self.session = session; self.tab = tab
-        title.stringValue = session.terminalTitle; intro.title = session.terminalTitle
+        title.stringValue = session.terminalTitle
         folderButton.setFolder(session.cwd)
         path.stringValue = session.cwd.isEmpty ? "Folder unavailable" : shortPath(session.cwd)
         detail.stringValue = [session.provider.title, session.status].filter { !$0.isEmpty }.joined(separator: " · ")
+        intro.title = session.terminalTitle
         intro.toolTip = session.terminalTitle + "\n" + path.stringValue + "\nClick for files"
         mark.setAccessibilityLabel(session.terminalTitle + ". Hover for name; click for files.")
+        guard !overviewPresented else { return }
         stopLoading()
-        setPhase(announce ? .title : .collapsed, animate: announce && panel.isVisible)
-        // A quiet restore must not move the panel onto an unrelated Space.
-        if announce || (!panel.isVisible && panel.isOnActiveSpace) { panel.orderFrontRegardless() }
+        setPhase(.collapsed, animate: false)
+        // Restore context without replaying the name or moving onto another Space.
+        if !panel.isVisible && panel.isOnActiveSpace { panel.orderFrontRegardless() }
         hovering = false
-        if announce {
-            hovering = NSMouseInRect(NSEvent.mouseLocation, panel.frame, false)
-            hoverPreview = hovering
-            scheduleCollapse()
-        }
     }
     @objc private func toggleExpansion() { if phase == .expanded { collapse() } else { expand() } }
     @objc func expand() {
-        guard let session else { return }
-        let interruptingAnimation = morph?.isAnimating == true
-        dismissal?.cancel(); hoverDelay?.cancel(); hoverPreview = false; presentation += 1
+        guard terminalContextActive, let session else { return }
+        speech.hide()
+        let interruptingAnimation = morph?.isAnimating == true || interruptedTransition
+        interruptedTransition = false
+        hoverDelay?.cancel()
         previousApplication = NSWorkspace.shared.frontmostApplication
         needsFileFocus = true
         artifactBrowser.show(folder: session.cwd, refresh: true)
@@ -347,6 +512,8 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         }
     }
     func collapse(restoreFocus: Bool = true) {
+        intro.title = session?.terminalTitle ?? "CCS · Your active work"
+        intro.toolTip = "Click for files; right-click for active work"
         let wasKey = panel.isKeyWindow
         stopLoading(); setPhase(.collapsed)
         panel.resignKey()
@@ -356,13 +523,19 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         }
         previousApplication = nil
     }
-    @objc private func closeCard() { hide() }
-    @objc private func browseFiles() { if let session { hide(); onBrowseFiles?(session) } }
+    @objc private func closeCard() { if persistent { collapse() } else { hide() } }
+    @objc private func browseFiles() {
+        if let session {
+            if persistent { collapse(restoreFocus: false) } else { hide() }
+            onBrowseFiles?(session)
+        }
+    }
     func windowDidResignKey(_ notification: Notification) {
         if phase == .expanded { collapse(restoreFocus: false) }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { collapse(); return false }
-    private func setPhase(_ value: Phase, animate: Bool = true) {
+    private func setPhase(_ value: Phase, animate: Bool = true, duringDrag: Bool = false) {
+        guard !drag.isTracking || duringDrag else { return }
         morph?.stop(); morph = nil; morphRevision += 1
         let revision = morphRevision
         phase = value
@@ -376,7 +549,7 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         let endMarkTop: CGFloat = value == .expanded ? 8 : 10
         var frame = panel.frame
         frame.origin.x += frame.width - size.width; frame.origin.y += frame.height - size.height; frame.size = size
-        if let tab, let primary = NSScreen.screens.first {
+        if placement == nil, let tab, let primary = NSScreen.screens.first {
             let terminal = NSRect(x: tab.bounds.minX, y: primary.frame.maxY - tab.bounds.maxY, width: tab.bounds.width, height: tab.bounds.height)
             let screen = NSScreen.screens.max { a, b in
                 let x = a.frame.intersection(terminal), y = b.frame.intersection(terminal)
@@ -385,6 +558,19 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
             let visible = screen.visibleFrame
             frame.origin.x = min(max(terminal.maxX - size.width - 16, visible.minX + 12), visible.maxX - size.width - 12)
             frame.origin.y = min(max(terminal.maxY - size.height - 70, visible.minY + 12), visible.maxY - size.height - 12)
+        }
+        if let placement {
+            frame.origin = NSPoint(x: placement.x - size.width, y: placement.y - size.height)
+        } else if tab == nil, let screen = NSScreen.main {
+            frame.origin = NSPoint(x: screen.visibleFrame.maxX - size.width - 16, y: screen.visibleFrame.maxY - size.height - 50)
+        }
+        if let screen = NSScreen.screens.max(by: {
+            let a = $0.frame.intersection(frame), b = $1.frame.intersection(frame)
+            return (a.isNull ? 0 : a.width * a.height) < (b.isNull ? 0 : b.width * b.height)
+        }) {
+            let visible = screen.visibleFrame
+            frame.origin.x = min(max(frame.minX, visible.minX + 8), visible.maxX - size.width - 8)
+            frame.origin.y = min(max(frame.minY, visible.minY + 8), visible.maxY - size.height - 8)
         }
         let update: (CGFloat) -> Void = { [weak self] progress in
             guard let self, revision == self.morphRevision else { return }
@@ -409,24 +595,13 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
             morph = Morph(update: update); morph?.start()
         } else { update(1) }
     }
-    private func scheduleCollapse() {
-        dismissal?.cancel(); presentation += 1
-        guard phase == .title, !hovering else { return }
-        let request = presentation
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, request == self.presentation else { return }
-            self.collapse(restoreFocus: false)
-        }
-        dismissal = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
-    }
     func setHovering(_ value: Bool) {
+        guard terminalContextActive else { return }
+        guard !overviewPresented, !drag.isTracking else { return }
         guard hovering != value else { return }
         hovering = value; hoverDelay?.cancel()
         guard phase != .expanded, panel.isVisible else { return }
         if value {
-            dismissal?.cancel(); presentation += 1
-            hoverPreview = true
             guard phase == .collapsed else { return }
             let work = DispatchWorkItem { [weak self] in
                 guard let self, self.hovering, self.phase == .collapsed, self.panel.isVisible else { return }
@@ -434,30 +609,35 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
             }
             hoverDelay = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
-        } else if hoverPreview {
-            hoverPreview = false
-            if phase == .title { collapse(restoreFocus: false) }
-        } else { scheduleCollapse() }
+        } else if phase == .title { collapse(restoreFocus: false) }
     }
     func contextEnded(_ reason: TerminalSessionMonitor.Dismissal) {
+        terminalContextActive = false
         switch reason {
-        case .disabled, .tabChanged: hide()
+        case .disabled: hide()
+        case .tabChanged:
+            if persistent { showLauncher(clearSession: true) } else { hide() }
         case .spaceChanged:
             // Collapse in place without replaying the title or changing Spaces.
             stopLoading(); hovering = false
+            intro.title = session?.terminalTitle ?? "CCS · Your active work"
             setPhase(.collapsed, animate: false); panel.resignKey()
         case .inactive:
-            // Keep the last identified folder within reach across applications.
-            // Opening CCS's picker hides the bubble so the two panels do not overlap.
-            if NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier,
+            hovering = false
+            if phase == .title { collapse(restoreFocus: false) }
+            // A click-opened selector can keep focus; the launcher is otherwise inert.
+            if !persistent, NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier,
                phase != .expanded { hide() }
         }
     }
     private func stopLoading() {
-        dismissal?.cancel(); hoverDelay?.cancel(); hoverPreview = false; presentation += 1
+        hoverDelay?.cancel()
         artifactTimer?.invalidate(); artifactTimer = nil; artifactBrowser.cancel()
     }
     func hide() {
+        drag.reset(); interruptedTransition = false
+        overviewPresented = false
+        speech.hide(); terminalContextActive = false
         stopLoading(); hovering = false
         morph?.stop(); morph = nil; morphRevision += 1; needsFileFocus = false
         panel.orderOut(nil); previousApplication = nil
