@@ -32,9 +32,20 @@ final class ArtifactService {
 }
 
 private final class ArtifactTable: NSTableView {
-    var onOpen: (() -> Void)?, onBack: (() -> Void)?
+    var onOpen: (() -> Void)?, onBack: (() -> Void)?, onInteract: (() -> Void)?
+    private var pointerArea: NSTrackingArea?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let pointerArea { removeTrackingArea(pointerArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(area); pointerArea = area
+    }
+    override func mouseEntered(with event: NSEvent) { onInteract?() }
+    override func mouseDown(with event: NSEvent) { onInteract?(); super.mouseDown(with: event) }
+    override func scrollWheel(with event: NSEvent) { onInteract?(); super.scrollWheel(with: event) }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func keyDown(with event: NSEvent) {
+        onInteract?()
         if event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
             if event.keyCode == 36 || event.keyCode == 76 { onOpen?(); return }
             if event.keyCode == 123 { onBack?(); return }
@@ -58,6 +69,11 @@ final class ArtifactBrowser: NSView, NSTableViewDataSource, NSTableViewDelegate,
     private let location = ArtifactLabel(labelWithString: "")
     private let status = ArtifactLabel(wrappingLabelWithString: "Select a session to see its files.")
     private let filter = NSSearchField()
+    private let searchHint = ArtifactLabel(labelWithString: "Filenames and paths · all session dates")
+    private let searcher: ArtifactSearch
+    private var searchQuery: String?, searchFolders = Set<String>()
+    private(set) var isGlobalSearch = false
+    private var interacted = false
     private let visibleRowLimit: Int?
     private var request = 0, pending: DispatchWorkItem?
     private var allFiles = [SessionArtifact]()
@@ -69,13 +85,16 @@ final class ArtifactBrowser: NSView, NSTableViewDataSource, NSTableViewDelegate,
     init(showLocation: Bool = true, visibleRowLimit: Int? = nil, folderButton: FolderButton = FolderButton(), loader: @escaping Loader = ArtifactService.shared.load,
          opener: @escaping (SessionArtifact) -> Bool = ArtifactService.shared.open) {
         self.loader = loader; self.opener = opener; self.folderButton = folderButton
+        searcher = ArtifactSearch(load: loader)
         self.visibleRowLimit = visibleRowLimit
         super.init(frame: .zero)
         folderButton.onOpened = { [weak self] in self?.onOpened?() }
         heading.font = .systemFont(ofSize: 12, weight: .semibold); heading.textColor = .labelColor
-        location.font = .systemFont(ofSize: 10); location.textColor = .secondaryLabelColor; location.lineBreakMode = .byTruncatingMiddle
+        location.font = .systemFont(ofSize: 10); location.textColor = .labelColor.withAlphaComponent(0.8); location.lineBreakMode = .byTruncatingMiddle
         filter.placeholderString = "Filter files"; filter.controlSize = .small; filter.delegate = self
         filter.setAccessibilityLabel("Filter files in this folder")
+        searchHint.font = .systemFont(ofSize: 10); searchHint.textColor = .labelColor.withAlphaComponent(0.8)
+        searchHint.isHidden = true
         table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("artifact")))
         table.headerView = nil; table.backgroundColor = .clear; table.style = .plain
         table.rowHeight = visibleRowLimit == nil ? 48 : 42; table.intercellSpacing = NSSize(width: 0, height: 2)
@@ -84,8 +103,9 @@ final class ArtifactBrowser: NSView, NSTableViewDataSource, NSTableViewDelegate,
         table.setAccessibilityLabel("Files in the selected session’s folder")
         table.onOpen = { [weak self] in self?.openSelected() }
         table.onBack = { [weak self] in self?.onBack?() }
+        table.onInteract = { [weak self] in self?.noteInteraction() }
         scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.drawsBackground = false
-        status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor
+        status.font = .systemFont(ofSize: 11); status.textColor = .labelColor.withAlphaComponent(0.8)
         status.maximumNumberOfLines = 2
         let header = NSView()
         do {
@@ -95,14 +115,15 @@ final class ArtifactBrowser: NSView, NSTableViewDataSource, NSTableViewDelegate,
             heading.setContentCompressionResistancePriority(.required, for: .horizontal)
             location.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             location.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            for view in [headingRow, filter] {
+            for view in [headingRow, filter, searchHint] {
                 view.translatesAutoresizingMaskIntoConstraints = false; header.addSubview(view)
                 view.leadingAnchor.constraint(equalTo: header.leadingAnchor).isActive = true
                 view.trailingAnchor.constraint(equalTo: header.trailingAnchor).isActive = true
             }
             NSLayoutConstraint.activate([header.heightAnchor.constraint(equalToConstant: 44),
                 headingRow.topAnchor.constraint(equalTo: header.topAnchor),
-                filter.bottomAnchor.constraint(equalTo: header.bottomAnchor)])
+                filter.bottomAnchor.constraint(equalTo: header.bottomAnchor),
+                searchHint.centerYAnchor.constraint(equalTo: filter.centerYAnchor)])
         }
         let views: [NSView] = [header, scroll, status]
         let stack = NSStackView(views: views); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 8
@@ -115,12 +136,26 @@ final class ArtifactBrowser: NSView, NSTableViewDataSource, NSTableViewDelegate,
         if visibleRowLimit != nil { listHeight = scroll.heightAnchor.constraint(equalToConstant: 44); listHeight?.isActive = true }
         else { scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true }
     }
+    private func receiveSearch(_ result: ArtifactSearchSnapshot) {
+        allFiles = result.files; applyFilter()
+        location.stringValue = "\(files.count) \(files.count == 1 ? "file" : "files")"
+        var text = result.searching ? "Searching folders \(result.searched)/\(result.total)…" : result.files.isEmpty ? "No files match." : "\(result.searched) session folders searched."
+        if result.incompleteFolders > 0 { text += " Some folders were skipped or limited." }
+        if result.limited { text += " Showing limited results." }
+        status.stringValue = text; status.toolTip = text; status.isHidden = false
+        onLoaded?(files.count)
+    }
+
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit { pending?.cancel() }
 
     func show(folder: String?, refresh: Bool = false) {
-        guard refresh || self.folder != folder else { return }
-        let changed = self.folder != folder
+        guard refresh || isGlobalSearch || self.folder != folder else { return }
+        let changed = isGlobalSearch || self.folder != folder
+        searcher.cancel(); searchQuery = nil; isGlobalSearch = false
+        heading.stringValue = "Files in this folder"; filter.isHidden = false; searchHint.isHidden = true
+        folderButton.isHidden = false
+        table.setAccessibilityLabel("Files in the selected session’s folder")
         self.folder = folder; folderButton.setFolder(folder); request += 1; pending?.cancel()
         let revision = request
         if changed {
@@ -144,11 +179,41 @@ final class ArtifactBrowser: NSView, NSTableViewDataSource, NSTableViewDelegate,
         pending = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
     }
-    func cancel() { request += 1; pending?.cancel(); pending = nil }
+    func showSearch(query: String, folders: [String]) {
+        guard searchQuery != query || searchFolders != Set(folders) else { return }
+        request += 1; pending?.cancel(); searcher.onUpdate = nil
+        searchQuery = query; searchFolders = Set(folders); isGlobalSearch = true
+        interacted = false
+        folder = nil; folderButton.setFolder(nil); folderButton.isHidden = true
+        heading.stringValue = "Files across sessions"; location.toolTip = "Searches folders from all dates for the selected providers."
+        filter.stringValue = ""; filter.isHidden = true; searchHint.isHidden = false
+        table.setAccessibilityLabel("Matching files across session folders")
+        status.isHidden = false; status.stringValue = "Searching session folders…"
+        // Debounce typing before scheduling any new directory reads.
+        let revision = request
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, revision == self.request else { return }
+            self.searcher.onUpdate = { [weak self] result in
+                guard let self, revision == self.request, self.isGlobalSearch else { return }
+                self.receiveSearch(result)
+            }
+            self.searcher.search(query, folders: folders)
+        }
+        allFiles = []; applyFilter(); location.stringValue = ""
+        pending = work; DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
+    }
+    func cancel() { request += 1; pending?.cancel(); pending = nil; searcher.cancel(); searchQuery = nil }
+    func invalidateSearch() { if isGlobalSearch { cancel() } }
     private func applyFilter() {
         let query = filter.stringValue
         let keep = files.indices.contains(table.selectedRow) ? files[table.selectedRow].url : nil
-        files = allFiles.filter { query.isEmpty || $0.relativePath.localizedCaseInsensitiveContains(query) }
+        let matches = allFiles.filter { query.isEmpty || $0.relativePath.localizedCaseInsensitiveContains(query) }
+        if isGlobalSearch, interacted {
+            // Results arrive progressively. Keep existing rows under the pointer;
+            // newly discovered matches append until the next query or refresh.
+            let existing = Set(files.map(\.url))
+            files = Array((files + matches.filter { !existing.contains($0.url) }).prefix(200))
+        } else { files = matches }
         listHeight?.constant = CGFloat(max(1, min(allFiles.count, visibleRowLimit ?? 5)) * 44)
         table.reloadData()
         if !files.isEmpty {
@@ -166,9 +231,11 @@ final class ArtifactBrowser: NSView, NSTableViewDataSource, NSTableViewDelegate,
     }
     func focusFiles() -> Bool {
         guard !files.isEmpty else { return false }
+        noteInteraction()
         if table.selectedRow < 0 { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
         return window?.makeFirstResponder(table) ?? false
     }
+    func noteInteraction() { interacted = true }
     func focusSearch() { window?.makeFirstResponder(filter) }
     @objc private func clicked() { if table.clickedRow >= 0 { openSelected() } }
     func openSelected() {
@@ -184,10 +251,10 @@ final class ArtifactBrowser: NSView, NSTableViewDataSource, NSTableViewDelegate,
         let name = ArtifactLabel(labelWithString: file.name); name.font = .systemFont(ofSize: 12, weight: .medium); name.lineBreakMode = .byTruncatingMiddle
         let icon = NSImageView(image: NSImage(systemSymbolName: "doc.text", accessibilityDescription: file.kind)!)
         icon.contentTintColor = .secondaryLabelColor
-        let parent = (file.relativePath as NSString).deletingLastPathComponent
+        let parent = isGlobalSearch ? shortPath(file.url.deletingLastPathComponent().path) : (file.relativePath as NSString).deletingLastPathComponent
         let context = parent.isEmpty ? file.kind : parent + " · " + file.kind
         let hint = ArtifactLabel(labelWithString: context + " · " + (file.openCount > 0 ? "Opened before" : "Updated " + ageString(file.modifiedAt.timeIntervalSince1970)))
-        hint.font = .systemFont(ofSize: 10); hint.textColor = .secondaryLabelColor; hint.lineBreakMode = .byTruncatingMiddle
+        hint.font = .systemFont(ofSize: 10); hint.textColor = .labelColor.withAlphaComponent(0.8); hint.lineBreakMode = .byTruncatingMiddle
         let text = NSStackView(views: [name, hint]); text.orientation = .vertical; text.alignment = .leading; text.spacing = 2
         name.widthAnchor.constraint(equalTo: text.widthAnchor).isActive = true
         name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)

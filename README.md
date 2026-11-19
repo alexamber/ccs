@@ -10,7 +10,7 @@ The Swift app and CLI share one engine. Neither Python nor Hammerspoon is needed
 
 ## Install
 
-Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v1.2.0/CCS-1.2.0-macos-universal.dmg),
+Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v1.2.1/CCS-1.2.1-macos-universal.dmg),
 drag CCS into Applications, and open it. Choose **Install Command-Line Tool** in
 the CCS menu to install the terminal picker too. Both Apple Silicon and Intel
 executables are included.
@@ -106,7 +106,11 @@ with observed live-state changes. Selecting a row validates and focuses its tab;
 it never starts a replacement session. Compact rows show colored status dots and
 text labels, with up to twelve sessions visible and scrolling for the rest. Recent
 snapshots appear immediately while a fresh read runs; quick reopenings reuse the
-same read. Once you navigate or move into the list, refreshes update statuses in
+same read. Start typing in **Filter active sessions** to match names, folders,
+providers, or status words such as “working” or “input.” Down moves into the list;
+Return opens the selected session. Escape clears a filter first, then closes the
+menu. Filtering preserves the status/recency order. Once you navigate or move into
+the list, refreshes update statuses in
 place. Use the refresh control to apply a changed order or show newly found rows.
 
 Optional updates use a read-only Codex daemon event connection and managed Claude
@@ -181,6 +185,22 @@ Move through sessions to browse their files; press Right to enter the file list,
 Return to open a file, and Left to return to sessions. Clicks open files in their
 default app. The sidebar also has a file-name filter. In the sidebar and expanded
 bubble, click the folder icon beside the path to open the workspace in Finder.
+
+The picker's main **Search sessions and files** field also finds artifacts by
+filename and path across known session folders. File results appear on the right
+with their parent folder, even when no conversation title matches. This search
+uses all session dates and respects the provider filter; shared folders and files
+are deduplicated. Right moves into file results; Down also enters files when no
+session matches. Return opens the selected file when no session matches. ⌘F
+returns to the main search. File rows keep their positions once you interact
+with them, while new matches arrive. Clearing the query restores the selected folder's files.
+Use ⌘R to refresh discovery. Document contents are not searched.
+
+Cross-folder discovery runs only during an explicit search, one folder at a time,
+and stops when the picker closes or its scope changes. Typing reuses discovered
+metadata. Existing protected-folder and scan limits still apply; skipped/limited
+folders are indicated. Each search holds at most 10,000 discovered files and shows
+up to 200 matches, with a notice when results are limited.
 
 Files are discovered automatically in the session folder and two levels of
 subfolders. HTML, PDF, Markdown, text, Office documents, and CSV are supported.

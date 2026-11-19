@@ -88,6 +88,12 @@ source/build/cache directories, and housekeeping documents. Each scan stops afte
 2,500 entries or one second between enumeration steps, and retains up to 100 files.
 `ArtifactService` serializes discovery and a local usage ledger, with a five-second,
 32-folder cache. No file contents are indexed and no filesystem watcher runs.
+`ArtifactSearch` coordinates progressive cross-folder filename/path discovery
+through the existing artifact loader. Query edits reuse discovered metadata;
+scope changes and dismissal invalidate pending results. The search is bounded to
+10,000 discovered files and 200 displayed matches, with partial-result notices.
+The browser preserves row positions once the user interacts with search results.
+
 `ArtifactBrowser` shares the list and default-app opening behavior between the
 picker sidebar and expanded bubble selector. Selection loads are debounced and
 generation-checked; hidden views cancel pending results. Expanded selectors refresh

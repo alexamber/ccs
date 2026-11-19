@@ -9,6 +9,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     var onSettings: (() -> Void)?
     var onSave: ((Settings) throws -> Void)?
     private let search = NSSearchField(), table = NSTableView(), scroll = NSScrollView()
+    private var artifactWidth: NSLayoutConstraint!
     private let views = NSSegmentedControl(labels: ["Recent", "Folders"], trackingMode: .selectOne, target: nil, action: nil)
     private let ranges = NSSegmentedControl(labels: ["1d", "3d", "7d", "30d", "All"], trackingMode: .selectOne, target: nil, action: nil)
     private let providers = NSSegmentedControl(labels: ProviderFilter.allCases.map(\.title), trackingMode: .selectOne, target: nil, action: nil)
@@ -55,9 +56,9 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
             stack.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -20),
             stack.topAnchor.constraint(equalTo: background.topAnchor, constant: 20),
             stack.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -16)])
-        search.placeholderString = "Search Claude and Codex sessions"; search.font = .systemFont(ofSize: 17)
+        search.placeholderString = "Search sessions and files"; search.font = .systemFont(ofSize: 17)
         search.delegate = self; search.sendsSearchStringImmediately = true
-        search.setAccessibilityLabel("Search sessions")
+        search.setAccessibilityLabel("Search sessions and artifact filenames")
         stack.addArrangedSubview(search); search.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         let bar = NSStackView(); bar.spacing = 10
         views.toolTip = "Recent: newest sessions first. Folders: group sessions by project folder. Switch with Control-Tab."
@@ -104,7 +105,8 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         left.heightAnchor.constraint(equalTo: body.heightAnchor).isActive = true
         divider.heightAnchor.constraint(equalTo: body.heightAnchor).isActive = true
         scroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 340).isActive = true
-        self.artifactBrowser.widthAnchor.constraint(equalToConstant: 320).isActive = true
+        artifactWidth = self.artifactBrowser.widthAnchor.constraint(equalToConstant: 320)
+        artifactWidth.isActive = true
         self.artifactBrowser.heightAnchor.constraint(equalTo: body.heightAnchor).isActive = true
         self.artifactBrowser.onBack = { [weak self] in guard let self else { return }; self.panel.makeFirstResponder(self.table) }
         self.artifactBrowser.onOpened = { [weak self] in self?.hide(restoreFocus: false) }
@@ -160,7 +162,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         if self.settings.defaultDays != settings.defaultDays { days = settings.defaultDays }
         if self.settings.folders != settings.folders { recent = !settings.folders }
         self.settings = settings
-        search.placeholderString = "Search " + settings.enabledProviders.map(\.title).joined(separator: " and ") + " sessions"
+        search.placeholderString = "Search sessions and files"
         table.setAccessibilityLabel(settings.enabledProviders.map(\.title).joined(separator: " and ") + " sessions")
         views.selectedSegment = recent ? 0 : 1
         ranges.selectedSegment = dateWindows.firstIndex(of: days) ?? 2
@@ -200,7 +202,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         previousApplication = front?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : front
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil); panel.makeFirstResponder(search)
-        artifactBrowser.show(folder: selected?.cwd, refresh: true)
+        updateArtifacts(refresh: true)
         refresh()
         timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refresh() }
     }
@@ -253,16 +255,17 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
             }
             // Finishing while hidden still warms the next opening.
             self.reload()
-            if self.panel.isVisible { self.artifactBrowser.show(folder: self.selected?.cwd, refresh: true) }
+            if self.panel.isVisible { self.updateArtifacts(refresh: true) }
         }
     }
     func reload() {
         reloading = true
-        defer { reloading = false; if panel.isVisible { artifactBrowser.show(folder: selected?.cwd) } }
+        defer { reloading = false; if panel.isVisible { updateArtifacts() } }
         let keep = selected?.key
         let cutoff = days == 0 ? 0 : Date().timeIntervalSince1970 - Double(days) * 86400
         rows = sessionRows(sessions.filter { settings.enabledProviders.contains($0.provider) && settings.providerFilter.includes($0.provider) && (terminalKeys?.contains($0.key) == true || $0.mtime >= cutoff) }, query: search.stringValue, recent: recent, tree: false)
-        table.reloadData(); count.stringValue = "\(rows.filter { $0.session != nil }.count) sessions"
+        let sessionCount = rows.filter { $0.session != nil }.count
+        table.reloadData(); count.stringValue = "\(sessionCount) \(sessionCount == 1 ? "session" : "sessions")"
         empty.isHidden = rows.contains { $0.session != nil }; empty.stringValue = search.stringValue.isEmpty ? "No sessions in this range" : "No sessions match"
         if sessions.isEmpty, let installedProviders, installedProviders.isEmpty {
             empty.stringValue = "Install " + settings.enabledProviders.map { $0 == .claude ? "Claude Code" : "Codex" }.joined(separator: " or ") + " to get started"
@@ -275,6 +278,18 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         message.toolTip = message.stringValue
         if let keep, let row = rows.firstIndex(where: { $0.session?.key == keep }) { select(row) }
         else if let row = rows.firstIndex(where: { $0.session != nil }) { select(row) }
+    }
+    private func updateArtifacts(refresh: Bool = false) {
+        let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        artifactWidth.constant = min(query.isEmpty ? 320 : 420, max(240, panel.frame.width - 503))
+        if query.isEmpty { artifactBrowser.show(folder: selected?.cwd, refresh: refresh) }
+        else {
+            // Date filters apply to conversation history. Global file search
+            // includes all known folders for the selected providers.
+            let folders = sessions.filter { settings.enabledProviders.contains($0.provider) && settings.providerFilter.includes($0.provider) }
+                .sorted { $0.mtime > $1.mtime }.map(\.cwd)
+            artifactBrowser.showSearch(query: query, folders: folders)
+        }
     }
     var selected: Session? { table.selectedRow >= 0 && table.selectedRow < rows.count ? rows[table.selectedRow].session : nil }
     func select(_ row: Int) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); table.scrollRowToVisible(row) }
@@ -293,8 +308,12 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         if [36, 76, 125, 126, 121, 116, 115, 119].contains(event.keyCode), (!navigatingSessions || !event.modifierFlags.intersection([.control, .option, .command]).isEmpty) { return false }
         switch event.keyCode {
         case 53: hide()
-        case 36, 76: activateSelected(fresh: event.modifierFlags.contains(.shift))
-        case 125: move(1)
+        case 36, 76:
+            if selected == nil, artifactBrowser.isGlobalSearch, !event.modifierFlags.contains(.shift) { artifactBrowser.openSelected() }
+            else { activateSelected(fresh: event.modifierFlags.contains(.shift)) }
+        case 125:
+            if selected == nil, artifactBrowser.isGlobalSearch { return artifactBrowser.focusFiles() }
+            move(1)
         case 126: move(-1)
         case 124 where !command && !control && !event.modifierFlags.contains(.option) && navigatingSessions:
             return artifactBrowser.focusFiles()
@@ -311,7 +330,8 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         case 18 where command: selectFilter(.all)
         case 19 where command: selectFilter(.claude)
         case 20 where command: selectFilter(.codex)
-        case 15 where command: refresh()
+        case 15 where command: artifactBrowser.invalidateSearch(); refresh()
+        case 3 where command: panel.makeFirstResponder(search); search.selectText(nil)
         case 43 where command: settingsClicked()
         case 44 where command: showShortcuts()
         default: return false
@@ -344,11 +364,12 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         var reference: [(String, String)] = [
             (settings.hotkeyLabel, "Open picker; press again for a new dated session"),
             ("⌥⇥ / ⌥⇧⇥", "Cycle active Terminal sessions; release Option to switch"),
-            ("↑ / ↓", "Select session in search or list"),
+            ("⌘F", "Return to search"),
+            ("↑ / ↓", "Select session; Down enters files when only files match"),
             ("Page Up / Down", "Move ten sessions"),
             ("Home / End", "First / last session"),
             ("↵", "Open selected session"),
-            ("→ / ←", "Move between sessions and folder files"),
+            ("→ / ←", "Move between sessions and files"),
             ("⇧↵", "Start clean in the selected folder"),
             ("⌃⇥", "Switch Recent / Folders"),
             ("⇥ / ⇧⇥", "Move keyboard focus"),
@@ -414,7 +435,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
     func tableViewSelectionDidChange(_ notification: Notification) {
-        if !reloading, panel.isVisible { artifactBrowser.show(folder: selected?.cwd) }
+        if !reloading, panel.isVisible { updateArtifacts() }
     }
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { rows[row].session != nil }
     func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { rows[row].session == nil }

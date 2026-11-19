@@ -99,7 +99,7 @@ public final class ArtifactIndex {
             if $0.modifiedAt != $1.modifiedAt { return $0.modifiedAt > $1.modifiedAt }
             return $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending
         }
-        return ArtifactSnapshot(files: Array(files.prefix(100)), issue: limited ? "Large folder: showing files from a limited scan." : encounteredError ? "Some subfolders could not be read." : nil)
+        return ArtifactSnapshot(files: Array(files.prefix(100)), issue: limited || files.count > 100 ? "Large folder: showing files from a limited scan." : encounteredError ? "Some subfolders could not be read." : nil)
     }
 
     public func recordOpen(_ file: SessionArtifact, now: Date = Date()) {

@@ -91,4 +91,31 @@ final class SessionOverviewTests: XCTestCase {
             try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: directory).appendingPathComponent("compact-session-overview.png"))
         }
     }
+    func testFilteringRetainsTypingFocusAndOpensTheFilteredTarget() {
+        _ = NSApplication.shared
+        let bubble = TerminalSessionPopup(), menu = SessionOverview()
+        bubble.configureFloating(enabled: true, allSpaces: true)
+        defer { menu.close(); bubble.hide() }
+        let initial = snapshot([target("Authentication", status: "active"), target("Report", status: "waiting_input")])
+        let generation = menu.show(anchor: bubble.panel.contentView!, cached: initial)
+        menu.search.stringValue = "codex auth working"
+        menu.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: menu.search))
+        XCTAssertEqual(menu.visibleKeys, ["codex:Authentication"])
+        menu.supply(initial, finished: [], generation: generation)
+        XCTAssertTrue(menu.search.currentEditor() === menu.popover.contentViewController?.view.window?.firstResponder)
+        menu.search.stringValue = "/projects/report input"
+        menu.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: menu.search))
+        XCTAssertEqual(menu.visibleKeys, ["codex:Report"])
+        menu.search.stringValue = "no match"
+        menu.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: menu.search))
+        XCTAssertTrue(menu.visibleKeys.isEmpty)
+        XCTAssertTrue(menu.control(menu.search, textView: NSTextView(), doCommandBy: #selector(NSResponder.cancelOperation(_:))))
+        XCTAssertEqual(menu.visibleKeys.count, 2); XCTAssertTrue(menu.isShown)
+        menu.search.stringValue = "auth"
+        menu.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: menu.search))
+        var selected: String?, contextCount = 0
+        menu.onSelect = { selected = $0.key; contextCount = $1.count }
+        XCTAssertTrue(menu.control(menu.search, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:))))
+        XCTAssertEqual(selected, "codex:Authentication"); XCTAssertEqual(contextCount, 2)
+    }
 }

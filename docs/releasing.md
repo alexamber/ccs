@@ -126,6 +126,12 @@ Claude/Codex versions and build number. Avoid testing with unsaved work at risk.
    show an explanation without discovery-triggered permission prompts; a project
    report appears, filters, opens, and reflects edits within the refresh interval.
    Selecting sessions quickly must never show another folder's late results.
+   Also search for a file whose conversation title does not match, including an
+   older session outside the selected date range. Pass: global files respect the
+   provider filter, show their folders, and open with Return/Right/Down as appropriate.
+   ⌘F returns to search; clearing it restores the selected folder. Filter the
+   right-click active-session menu by topic/status and verify Escape clears first,
+   then closes. Late results must not move a file row under the pointer.
 8. **First-run account.** In a fresh macOS user account with one supported provider
    installed, install and start CCS. Pass: provider detection, default shortcuts,
    optional popup/login settings, first permission request, and CLI installation
