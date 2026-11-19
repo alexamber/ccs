@@ -74,6 +74,8 @@ extension SessionService {
                 for (id, live) in running {
                     var session = names[id] ?? Session(id: id, cwd: live.cwd ?? "", mtime: (live.startedAt ?? 0) / 1000, title: live.name ?? "")
                     session.live = live; session.status = cleanText(live.status).nonempty ?? "unknown"
+                    // Claude's live list has no turn identity. A remembered Stop belongs to its hook.
+                    session.activityTurn = nil
                     sessions.append(session)
                 }
             } else { unavailable.append(.claude) }

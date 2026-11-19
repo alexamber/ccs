@@ -1,16 +1,24 @@
 # CCS
 
-A native macOS popup and terminal picker for Claude Code and Codex. Search saved
-sessions, focus an existing Terminal tab, resume a closed conversation, or start
-clean in a project or a new dated folder.
+CCS brings your Claude Code and Codex sessions into one macOS picker. Press
+**Option-Space** to pick up a conversation where you left off, whether its
+Terminal tab is still open or you closed it yesterday. The optional floating
+unicorn lets you see which session needs you while you work in another app.
 
-CCS requires macOS 14 or later, Terminal.app, and at least one installed command:
-`claude` or `codex`.
-The Swift app and CLI share one engine. Neither Python nor Hammerspoon is needed.
+## Common uses
+
+- **Resume yesterday’s work.** Search by topic or project folder and press **Return** to focus the existing Terminal tab or reopen a saved session.
+- **Switch between running sessions.** Hold **Option**, tap **Tab** to cycle through active tabs, then release **Option** to jump to the selected one.
+- **Answer a waiting session.** Enable **Settings → Floating unicorn → Show unicorn**. The firefly marks unread updates. Right-click the unicorn to see **Needs attention** at the top, then select the session.
+- **Find a report when you forget which chat it came from.** Type part of its filename in the picker. The file results show matching documents and their project folders. Select a file and press **Return** to open it.
+- **Start fresh.** In the picker, press **Shift-Return** to start a new conversation in the selected session’s folder, or **⌘N** to start in a new dated folder.
+
+Requires macOS 14 or later, Terminal.app, and at least one installed command,
+`claude` or `codex`. The native app and the `ccs` terminal picker share the same session history.
 
 ## Install
 
-Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v1.2.1/CCS-1.2.1-macos-universal.dmg),
+Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v1.3.0/CCS-1.3.0-macos-universal.dmg),
 drag CCS into Applications, and open it. Choose **Install Command-Line Tool** in
 the CCS menu to install the terminal picker too. Both Apple Silicon and Intel
 executables are included.
@@ -82,7 +90,8 @@ block a successful launch or focus. Browsing, exports, and picker refreshes do
 not rename tabs.
 
 Enable Settings → **Floating unicorn → Show unicorn** for persistent access to
-active work. While Terminal is focused, hover over the compact icon to reveal the
+active work. Choose **Small**, **Medium** (default), or **Large** beside **Show unicorn**.
+The unicorn and its notification firefly scale together. While Terminal is focused, hover over the compact icon to reveal the
 selected session's name; moving away collapses it. Tab switches and desktop changes
 do not announce names automatically. Click the icon or name to open files for that
 identified Terminal session, with its folder, provider, and status. Outside Terminal,
@@ -121,14 +130,17 @@ slow. Neither path enumerates history or scans report folders. Codex reads only
 metadata and the latest turn's ID/status, excluding message and tool contents.
 
 Each event appears in a separate speech bubble pointing at the unicorn, with the
-event and session name. Notices queue in arrival order, show for five seconds each,
-and pause while hovered. Clicking the speech bubble opens that session; the icon
+event and session name. Each bubble shows for five seconds and pauses while hovered.
+A short grasshopper chirp plays once per delivered update. To mute it, turn off
+**Settings → Floating unicorn → Play notification sound**.
+Pending attention requests appear before queued completions, in arrival order within each group. Clicking the speech bubble opens that session; the icon
 keeps its normal behavior. Opening a menu, dragging, or browsing files pauses delivery
 instead of dropping notices. Visiting an identified session in foreground Terminal
 for one second acknowledges its updates and skips queued notices for it, however you
 switched there. Resolved waiting notices are removed; later completions remain.
-Opening the active-session list alone does not acknowledge anything. A purple dot
-marks unread updates. Attention status remains until the provider resolves it,
+Opening the active-session list alone does not acknowledge anything. A firefly with
+a bright yellow tail perches on the unicorn launcher's lower-left rim while updates are unread.
+Right-click the unicorn to review them. Attention status remains until the provider resolves it,
 even after its notification has been read.
 
 **Finished working** reports a completed turn or an observed working-to-idle
@@ -137,7 +149,7 @@ Startup and unchanged states stay quiet. Unknown or unconfirmed tabs cannot
 produce reliable conversation-specific notifications or acknowledgments.
 
 Settings independently control attention and completion updates, the text bubble,
-and the wiggle. Reduce Motion suppresses the wiggle. Turning off both update types
+the sound, and the wiggle. Reduce Motion suppresses the wiggle. Turning off both update types
 mutes alerts and clears queued notices while live status continues to update.
 Turning alerts back on does not replay changes observed while muted. Disable the
 unicorn to stop automatic status checks and event listening.
@@ -145,8 +157,8 @@ CCS adds only its own command hooks to Claude's settings and removes those hooks
 when the Claude provider or the unicorn is disabled, preserving other hooks and
 settings. Hook payloads contain only session identity, folder, event, and time;
 they never forward messages or tool inputs. Existing Claude sessions may need to
-reload hook configuration. No sound,
-notification permission, or remote summarization is used.
+reload hook configuration. CCS presents these alerts locally without requesting
+macOS notification permission.
 
 While enabled, CCS checks the selected tab about every quarter-second only while
 Terminal is frontmost. It reuses session metadata for up to ten seconds, with

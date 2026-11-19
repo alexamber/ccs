@@ -38,12 +38,22 @@ final class SessionNotificationQueueTests: XCTestCase {
     func testResolvedWaitIsDiscardedAndCompletionRemains() {
         let queue = SessionNotificationQueue()
         let waiting = update("b", waiting: true), finished = update("b")
-        queue.enqueue([update("a"), waiting, finished])
+        queue.enqueue([update("a")]); queue.enqueue([waiting, finished])
         queue.reconcile(TerminalActivitySnapshot(context: TerminalSwitchContext(targets: [finished.target], currentKey: nil)), attention: true, completion: true)
         XCTAssertEqual(queue.queuedCount, 1)
         XCTAssertEqual(queue.unreadCount, 2)
         queue.acknowledge("codex:a"); queue.tick()
         XCTAssertEqual(queue.current?.id, finished.id)
+    }
+    func testAttentionGoesAheadOfQueuedCompletionsWhileKeepingVisibleBubbleClickable() {
+        var time = Date()
+        let queue = SessionNotificationQueue(now: { time })
+        let first = update("a"), second = update("b"), third = update("c"), approval = update("d", waiting: true)
+        queue.enqueue([first, second, third]); queue.enqueue([approval])
+        XCTAssertEqual(queue.current?.id, first.id)
+        for next in [approval, second, third] {
+            time += 5; queue.tick(); XCTAssertEqual(queue.current?.id, next.id)
+        }
     }
     func testBlockedPresentationWaitsWithoutLosingOrAgingNotice() {
         var time = Date(timeIntervalSince1970: 100), allowed = false

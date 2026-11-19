@@ -34,13 +34,13 @@ if [ "$app_only" != --app-only ]; then
 fi
 cp macOS/Info.plist "$app/Contents/Info.plist"
 cp LICENSE "$app/Contents/Resources/LICENSE"
-cp Sources/CCSApp/Resources/Unicorn.png Sources/CCSApp/Resources/UnicornTemplate.png "$app/Contents/Resources/"
+cp Sources/CCSApp/Resources/{Unicorn.png,UnicornTemplate.png,Firefly.png,Grasshopper.caf} "$app/Contents/Resources/"
 if [ -n "${CCS_DONATION_URL:-}" ]; then
     case "$CCS_DONATION_URL" in https://*) ;; *) printf 'CCS_DONATION_URL must use HTTPS.\n' >&2; exit 2 ;; esac
     /usr/bin/plutil -insert CCSDonationURL -string "$CCS_DONATION_URL" "$app/Contents/Info.plist"
 fi
 xcrun swiftc -module-cache-path "$PWD/.build/module-cache" macOS/Icon.swift -o build/ccs-icon-generator
-build/ccs-icon-generator build/CCS.iconset
+build/ccs-icon-generator build/CCS.iconset Sources/CCSApp/Resources/Unicorn.png
 iconutil -c icns build/CCS.iconset -o "$app/Contents/Resources/CCS.icns"
 sign=(--force --sign "$identity" --options runtime --entitlements macOS/CCS.entitlements)
 if [ "$identity" != - ]; then sign+=(--timestamp); fi

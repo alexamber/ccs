@@ -12,6 +12,18 @@ public enum CCSPaths {
     }
 }
 
+public enum UnicornSize: String, CaseIterable, Codable {
+    case small, medium, large
+
+    public var scale: CGFloat {
+        switch self {
+        case .small: return 0.8
+        case .medium: return 1
+        case .large: return 1.25
+        }
+    }
+}
+
 public struct Settings: Codable, Equatable {
     public var defaultDays = 7
     public var folders = false
@@ -25,27 +37,35 @@ public struct Settings: Codable, Equatable {
     private var storedEnabledProviders: [Provider]?
     private var storedTerminalPopups: Bool?
     private var storedUnicornAllSpaces: Bool?
+    private var storedUnicornSize: String?
     private var storedNotifyAttention: Bool?
     private var storedNotifyCompletion: Bool?
     private var storedNotificationBubble: Bool?
+    private var storedNotificationSound: Bool?
     private var storedNotificationWiggle: Bool?
     private enum CodingKeys: String, CodingKey {
         case defaultDays, folders, newDirectory, cleanup, hotkeyCode, hotkeyModifiers, hotkeyLabel
         case storedNewProvider = "newProvider", storedProviderFilter = "providerFilter"
         case storedEnabledProviders = "enabledProviders"
         case storedTerminalPopups = "terminalPopups"
+        case storedUnicornSize = "unicornSize"
         case storedUnicornAllSpaces = "unicornAllSpaces", storedNotifyAttention = "notifyAttention"
         case storedNotifyCompletion = "notifyCompletion", storedNotificationBubble = "notificationBubble"
-        case storedNotificationWiggle = "notificationWiggle"
+        case storedNotificationSound = "notificationSound", storedNotificationWiggle = "notificationWiggle"
     }
     public var terminalPopups: Bool {
         get { storedTerminalPopups ?? false }
         set { storedTerminalPopups = newValue }
     }
     public var unicornAllSpaces: Bool { get { storedUnicornAllSpaces ?? true } set { storedUnicornAllSpaces = newValue } }
+    public var unicornSize: UnicornSize {
+        get { storedUnicornSize.flatMap(UnicornSize.init(rawValue:)) ?? .medium }
+        set { storedUnicornSize = newValue.rawValue }
+    }
     public var notifyAttention: Bool { get { storedNotifyAttention ?? true } set { storedNotifyAttention = newValue } }
     public var notifyCompletion: Bool { get { storedNotifyCompletion ?? true } set { storedNotifyCompletion = newValue } }
     public var notificationBubble: Bool { get { storedNotificationBubble ?? true } set { storedNotificationBubble = newValue } }
+    public var notificationSound: Bool { get { storedNotificationSound ?? true } set { storedNotificationSound = newValue } }
     public var notificationWiggle: Bool { get { storedNotificationWiggle ?? true } set { storedNotificationWiggle = newValue } }
     public var newProvider: Provider {
         get { storedNewProvider ?? .claude }

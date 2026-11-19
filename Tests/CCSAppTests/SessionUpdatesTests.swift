@@ -163,7 +163,7 @@ final class SessionUpdatesTests: XCTestCase {
         defer { popup.hide() }
         popup.configureFloating(enabled: true, allSpaces: true)
         popup.onNotificationOpen = { opened = $0.key }
-        popup.notify(SessionUpdate(target: target("other", "idle"), kind: .finished), bubble: true, wiggle: false)
+        popup.notify(SessionUpdate(target: target("other", "idle"), kind: .finished), bubble: true, wiggle: false, sound: false)
         XCTAssertEqual(popup.phase, .collapsed); XCTAssertFalse(popup.panel.canBecomeKey)
         XCTAssertTrue(popup.speech.panel.isVisible); XCTAssertFalse(popup.speech.panel.canBecomeKey)
         let current = target("current", "active")
@@ -215,7 +215,7 @@ final class SessionUpdatesTests: XCTestCase {
                 popup.speech.panel.appearance = NSAppearance(named: appearance)
                 let view = popup.speech.panel.contentView!
                 view.appearance = NSAppearance(named: appearance)
-                popup.notify(notice, bubble: true, wiggle: false)
+                popup.notify(notice, bubble: true, wiggle: false, sound: false)
                 view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
                 let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
                 view.cacheDisplay(in: view.bounds, to: bitmap)
@@ -237,9 +237,31 @@ final class SessionUpdatesTests: XCTestCase {
         XCTAssertEqual(popup.phase, .collapsed); XCTAssertEqual(scans, 0)
         popup.onShowSessions = { _ in menus += 1 }; popup.showSessions()
         XCTAssertEqual(menus, 1); popup.sessionOverviewClosed()
-        popup.notify(SessionUpdate(target: current, kind: .finished), bubble: true, wiggle: false)
+        popup.notify(SessionUpdate(target: current, kind: .finished), bubble: true, wiggle: false, sound: false)
         XCTAssertTrue(popup.speech.panel.isVisible)
         popup.expand(); XCTAssertEqual(scans, 0, "Icon click must not become notification click")
+    }
+    func testSoundPlaysOncePerDeliveredUpdateIncludingWithVisualEffectsOff() throws {
+        _ = NSApplication.shared
+        let chirp = try XCTUnwrap(TerminalSessionPopup.notificationChirp)
+        XCTAssertEqual(chirp.duration, 0.5, accuracy: 0.02)
+        let popup = TerminalSessionPopup()
+        defer { popup.hide() }
+        var played = 0
+        popup.playNotificationSound = { played += 1 }
+        let first = SessionUpdate(target: target("one", "waiting"), kind: .attention)
+        popup.notify(first, bubble: false, wiggle: false, sound: true)
+        XCTAssertEqual(played, 0)
+        popup.configureFloating(enabled: true, allSpaces: false)
+        popup.notify(first, bubble: false, wiggle: false, sound: true)
+        popup.notify(first, bubble: false, wiggle: false, sound: true)
+        XCTAssertEqual(played, 1)
+        let muted = SessionUpdate(target: target("two", "idle"), kind: .finished)
+        popup.notify(muted, bubble: false, wiggle: false, sound: false)
+        popup.notify(muted, bubble: false, wiggle: false, sound: true)
+        XCTAssertEqual(played, 1)
+        popup.notify(SessionUpdate(target: target("three", "idle"), kind: .finished), bubble: false, wiggle: false, sound: true)
+        XCTAssertEqual(played, 2)
     }
     func testOverviewAndSettingsRender() throws {
         _ = NSApplication.shared

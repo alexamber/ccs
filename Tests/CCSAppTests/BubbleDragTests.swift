@@ -61,27 +61,45 @@ final class BubbleDragTests: XCTestCase {
         XCTAssertTrue(popup.endPointerInteraction(at: NSPoint(x: point.x + 2, y: point.y + 1)))
         XCTAssertEqual(saves, 0)
     }
-    func testUpdateDotDoesNotInterceptPointerEventsOrGrowWithCount() throws {
+    func testUnreadFireflyStaysOnRimWithoutInterceptingClicksOrResizingLauncher() throws {
         _ = NSApplication.shared
         let popup = TerminalSessionPopup()
         defer { popup.hide() }
-        popup.configureFloating(enabled: true, allSpaces: true)
-        popup.setUpdateCount(1)
-        popup.panel.contentView?.layoutSubtreeIfNeeded()
-        XCTAssertFalse(popup.updateIndicator.isHidden)
-        let size = popup.updateIndicator.frame.size
-        XCTAssertEqual(size, NSSize(width: 9, height: 9))
-        XCTAssertNil(popup.updateIndicator.hitTest(.zero))
-        popup.setUpdateCount(100)
-        popup.panel.contentView?.layoutSubtreeIfNeeded()
-        XCTAssertEqual(popup.updateIndicator.frame.size, size)
-        if let directory = ProcessInfo.processInfo.environment["CCS_UI_ARTIFACT_DIR"] {
-            let view = popup.panel.contentView!
-            view.appearance = NSAppearance(named: .darkAqua); view.displayIfNeeded()
-            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
-            view.cacheDisplay(in: view.bounds, to: bitmap)
-            try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: directory).appendingPathComponent("unicorn-update-dot.png"))
+        for setting in UnicornSize.allCases {
+            popup.configureFloating(enabled: true, allSpaces: true, size: setting)
+            popup.setUpdateCount(1)
+            popup.panel.contentView?.layoutSubtreeIfNeeded()
+            XCTAssertFalse(popup.updateIndicator.isHidden)
+            let size = popup.updateIndicator.frame.size
+            XCTAssertNotNil(popup.updateIndicator.image)
+            // AppKit rounds the rendered frame to the display's pixel grid.
+            XCTAssertEqual(size.width, 18 * setting.scale, accuracy: 0.5)
+            XCTAssertEqual(size.height, 18 * setting.scale, accuracy: 0.5)
+            let frame = popup.updateIndicator.frame
+            XCTAssertTrue(popup.panel.contentView!.bounds.contains(frame))
+            XCTAssertEqual(frame.midX, 10.35 * setting.scale, accuracy: 1)
+            XCTAssertEqual(frame.midY, 10.35 * setting.scale, accuracy: 1)
+            XCTAssertNil(popup.updateIndicator.hitTest(NSPoint(x: frame.midX, y: frame.midY)))
+            XCTAssertEqual(popup.panel.frame.width, 56 * setting.scale, accuracy: 0.5)
+            XCTAssertEqual(popup.panel.frame.height, 56 * setting.scale, accuracy: 0.5)
+            let mark = try XCTUnwrap(popup.panel.contentView?.subviews.compactMap { $0 as? NSButton }.first { $0.image != nil })
+            XCTAssertEqual(mark.frame.width, 36 * setting.scale, accuracy: 0.5)
+            XCTAssertEqual(mark.frame.height, 36 * setting.scale, accuracy: 0.5)
+            let circle = try XCTUnwrap(popup.panel.contentView?.subviews.compactMap { $0 as? NSVisualEffectView }.first)
+            XCTAssertEqual(circle.frame.width, circle.frame.height, accuracy: 0.5)
+            XCTAssertEqual(circle.frame.midX, mark.frame.midX, accuracy: 0.5)
+            XCTAssertEqual(circle.frame.midY, mark.frame.midY, accuracy: 0.5)
+            popup.setUpdateCount(100)
+            popup.panel.contentView?.layoutSubtreeIfNeeded()
+            XCTAssertEqual(popup.updateIndicator.frame.size, size)
+            if let directory = ProcessInfo.processInfo.environment["CCS_UI_ARTIFACT_DIR"] {
+                let view = popup.panel.contentView!
+                view.appearance = NSAppearance(named: .darkAqua); view.displayIfNeeded()
+                let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+                try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: directory).appendingPathComponent("unicorn-firefly-\(setting.rawValue).png"))
+            }
         }
         popup.setUpdateCount(0); XCTAssertTrue(popup.updateIndicator.isHidden)
     }
@@ -102,5 +120,26 @@ final class BubbleDragTests: XCTestCase {
         XCTAssertEqual(popup.phase, .collapsed)
         XCTAssertTrue(popup.panel.frame.contains(end), "The original wide title must not leave the dragged icon far from the grip")
         XCTAssertFalse(popup.endPointerInteraction(at: end))
+    }
+    func testUnicornStaysUnderPointerWhenSessionNameOpensAtEitherScreenEdge() throws {
+        _ = NSApplication.shared
+        let popup = TerminalSessionPopup(), screen = try XCTUnwrap(NSScreen.main).visibleFrame
+        defer { popup.hide() }
+        popup.configureFloating(enabled: true, allSpaces: true)
+        let tab = try XCTUnwrap(TerminalTabSnapshot(output: "/dev/ttys001\n0\n0\n900\n600"))
+        popup.show(Session(id: "preview", cwd: "/tmp", title: "Review changes"), tab: tab)
+        let surface = try XCTUnwrap(popup.panel.contentView)
+        for edge in [screen.minX + 76, screen.maxX - 9] {
+            popup.moveAnchor(to: NSPoint(x: edge, y: screen.midY))
+            let point = NSPoint(x: surface.bounds.midX, y: surface.bounds.midY)
+            let icon = try XCTUnwrap(surface.hitTest(point) as? NSButton)
+            let before = popup.panel.convertToScreen(icon.convert(icon.bounds, to: nil))
+            popup.setHovering(true)
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.45))
+            XCTAssertEqual(popup.phase, .title)
+            XCTAssertEqual(popup.panel.convertToScreen(icon.convert(icon.bounds, to: nil)), before)
+            popup.setHovering(false)
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.25))
+        }
     }
 }

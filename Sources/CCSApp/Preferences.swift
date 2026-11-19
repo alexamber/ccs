@@ -19,7 +19,9 @@ final class Preferences: NSObject {
     private let choose = NSButton(title: "Choose…", target: nil, action: nil)
     private let cleanup = NSSwitch(), login = NSSwitch(), terminalPopups = NSSwitch()
     private let allSpaces = NSSwitch(), notifyAttention = NSSwitch(), notifyCompletion = NSSwitch()
-    private let notificationBubble = NSSwitch(), notificationWiggle = NSSwitch()
+    private let iconSize = NSSegmentedControl(labels: UnicornSize.allCases.map { $0.rawValue.capitalized },
+                                              trackingMode: .selectOne, target: nil, action: nil)
+    private let notificationBubble = NSSwitch(), notificationWiggle = NSSwitch(), notificationSound = NSSwitch()
     private let cliIcon = NSImageView(), cliTitle = NSTextField(labelWithString: ""), cliDetail = NSTextField(labelWithString: "")
     private let cliAction = NSButton(title: "", target: nil, action: nil)
     private var environment = ProcessInfo.processInfo.environment
@@ -65,18 +67,20 @@ final class Preferences: NSObject {
         }
         cleanup.state = settings.cleanup ? .on : .off; cleanup.setAccessibilityLabel("Clean up empty session folders")
         terminalPopups.setAccessibilityLabel("Floating unicorn")
+        iconSize.setAccessibilityLabel("Floating icon size")
         terminalPopups.toolTip = "Drag to position. Click for files; right-click for active sessions. Uses Terminal Automation permission."
         allSpaces.setAccessibilityLabel("Show on every desktop")
         notifyAttention.setAccessibilityLabel("Notify when a session needs attention")
         notifyCompletion.setAccessibilityLabel("Notify when a session finishes working")
         notificationBubble.setAccessibilityLabel("Show a small update bubble")
+        notificationSound.setAccessibilityLabel("Play notification sound")
         notificationWiggle.setAccessibilityLabel("Wiggle the unicorn")
         notifyAttention.toolTip = "Show alerts when a session needs you. Turning alerts off keeps live status updates running."
         notifyCompletion.toolTip = "Alert when work finishes; completion does not guarantee success. Turning alerts off keeps live status updates running."
         notificationBubble.toolTip = "Separate speech bubbles, one at a time. Hover pauses the five-second timeout. Visiting a session acknowledges its updates."
         notificationWiggle.toolTip = "A brief movement for a new update. Disabled automatically with Reduce Motion."
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off; login.setAccessibilityLabel("Start at login")
-        for control in [days as NSControl, grouping, cleanup, terminalPopups, allSpaces, notifyAttention, notifyCompletion, notificationBubble, notificationWiggle] {
+        for control in [days as NSControl, grouping, cleanup, terminalPopups, iconSize, allSpaces, notifyAttention, notifyCompletion, notificationBubble, notificationWiggle, notificationSound] {
             control.controlSize = .small; control.font = .systemFont(ofSize: 12)
             control.target = self; control.action = #selector(changed)
         }
@@ -95,9 +99,11 @@ final class Preferences: NSObject {
         let newChoice = NSStackView(views: [newProvider, newProviderValue])
         let picker = section("Picker", rows: [row(label("Providers"), sources), row(label("Shortcut"), shortcut), row(label("Open with"), defaults), row(label("New sessions"), newChoice), row(label("Start at login"), login)])
         let sessions = section("Sessions", rows: [row(folderText, choose, minimumHeight: 28), row(cleanupLabel, cleanup)])
-        let unicorn = section("Floating unicorn", rows: [row(label("Show unicorn"), terminalPopups), row(label("Show on every desktop"), allSpaces),
+        let appearance = NSStackView(views: [iconSize, terminalPopups]); appearance.spacing = 12
+        let unicorn = section("Floating unicorn", rows: [row(label("Show unicorn"), appearance), row(label("Show on every desktop"), allSpaces),
             row(label("Needs attention"), notifyAttention), row(label("Finished working"), notifyCompletion),
-            row(label("Small update bubble"), notificationBubble), row(label("Wiggle for updates"), notificationWiggle)])
+            row(label("Small update bubble"), notificationBubble), row(label("Wiggle for updates"), notificationWiggle),
+            row(label("Play notification sound"), notificationSound)])
         cliTitle.font = .systemFont(ofSize: 12, weight: .medium)
         cliDetail.font = .systemFont(ofSize: 10); cliDetail.textColor = .secondaryLabelColor; cliDetail.lineBreakMode = .byTruncatingMiddle
         let cliText = NSStackView(views: [cliTitle, cliDetail]); cliText.orientation = .vertical; cliText.alignment = .leading; cliText.spacing = 2
@@ -162,13 +168,16 @@ final class Preferences: NSObject {
         }
         cleanup.state = value.cleanup ? .on : .off
         terminalPopups.state = value.terminalPopups ? .on : .off
+        iconSize.selectedSegment = UnicornSize.allCases.firstIndex(of: value.unicornSize)!
+        iconSize.isEnabled = value.terminalPopups
         allSpaces.state = value.unicornAllSpaces ? .on : .off
         notifyAttention.state = value.notifyAttention ? .on : .off
         notifyCompletion.state = value.notifyCompletion ? .on : .off
         notificationBubble.state = value.notificationBubble ? .on : .off
+        notificationSound.state = value.notificationSound ? .on : .off
         notificationWiggle.state = value.notificationWiggle ? .on : .off
         for control in [allSpaces, notifyAttention, notifyCompletion] { control.isEnabled = value.terminalPopups }
-        for control in [notificationBubble, notificationWiggle] { control.isEnabled = value.terminalPopups && (value.notifyAttention || value.notifyCompletion) }
+        for control in [notificationBubble, notificationWiggle, notificationSound] { control.isEnabled = value.terminalPopups && (value.notifyAttention || value.notifyCompletion) }
         refreshFolder()
     }
     @objc private func changeNewProvider() {
@@ -221,8 +230,10 @@ final class Preferences: NSObject {
         let old = settings
         settings.defaultDays = dateWindows[max(0, days.indexOfSelectedItem)]; settings.folders = grouping.selectedSegment == 1; settings.cleanup = cleanup.state == .on
         settings.terminalPopups = terminalPopups.state == .on
+        settings.unicornSize = UnicornSize.allCases[iconSize.selectedSegment]
         settings.unicornAllSpaces = allSpaces.state == .on
         settings.notifyAttention = notifyAttention.state == .on; settings.notifyCompletion = notifyCompletion.state == .on
+        settings.notificationSound = notificationSound.state == .on
         settings.notificationBubble = notificationBubble.state == .on; settings.notificationWiggle = notificationWiggle.state == .on
         do { try onSave?(settings) }
         catch { apply(old); showError(error, window: window) }

@@ -42,7 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         activity.canPresent = { [weak self] in self?.terminalPopup.canShowNotification == true }
         activity.onShow = { [weak self] update in
             guard let self else { return }
-            self.terminalPopup.notify(update, bubble: self.settings.notificationBubble, wiggle: self.settings.notificationWiggle)
+            self.terminalPopup.notify(update, bubble: self.settings.notificationBubble, wiggle: self.settings.notificationWiggle, sound: self.settings.notificationSound)
         }
         activity.onHide = { [weak self] in self?.terminalPopup.speech.hide() }
         activity.onUnreadChange = { [weak self] in self?.terminalPopup.setUpdateCount($0) }
@@ -160,7 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             settings = value; popup.apply(value); preferences.apply(value)
             terminalMonitor?.configure(enabled: value.terminalPopups)
-            terminalPopup.configureFloating(enabled: value.terminalPopups, allSpaces: value.unicornAllSpaces)
+            terminalPopup.configureFloating(enabled: value.terminalPopups, allSpaces: value.unicornAllSpaces, size: value.unicornSize)
             let reset = old.enabledProviders != value.enabledProviders || old.terminalPopups != value.terminalPopups
             if reset { sessionOverview.close() }
             activity.configure(value)

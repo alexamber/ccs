@@ -71,7 +71,8 @@ final class SessionNotificationQueue {
             self.current = nil; hovered = false; onHide?()
         }
         guard !pending.isEmpty else { onChange?(); return }
-        current = pending.removeFirst(); remaining = 5
+        let index = pending.firstIndex { $0.kind == .attention } ?? pending.startIndex
+        current = pending.remove(at: index); remaining = 5
         onShow?(current!)
     }
 }

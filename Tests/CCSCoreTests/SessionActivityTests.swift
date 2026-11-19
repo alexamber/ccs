@@ -56,11 +56,20 @@ final class SessionActivityTests: XCTestCase {
         var restored = try JSONDecoder().decode(Settings.self, from: data)
         XCTAssertFalse(restored.terminalPopups)
         XCTAssertTrue(restored.unicornAllSpaces)
+        XCTAssertEqual(restored.unicornSize, .medium)
+        for size in UnicornSize.allCases {
+            restored.unicornSize = size
+            let saved = try JSONEncoder().encode(restored)
+            XCTAssertEqual(try JSONDecoder().decode(Settings.self, from: saved).unicornSize, size)
+        }
         restored.unicornAllSpaces = false; restored.notifyAttention = false; restored.notifyCompletion = false
+        XCTAssertTrue(restored.notificationSound)
+        restored.notificationSound = false
         restored.notificationBubble = false; restored.notificationWiggle = false
         let persisted = try JSONDecoder().decode(Settings.self, from: JSONEncoder().encode(restored))
         XCTAssertEqual(restored, persisted)
         XCTAssertFalse(persisted.unicornAllSpaces); XCTAssertFalse(persisted.notifyAttention); XCTAssertFalse(persisted.notifyCompletion)
+        XCTAssertFalse(persisted.notificationSound)
         XCTAssertFalse(persisted.notificationBubble); XCTAssertFalse(persisted.notificationWiggle)
     }
 }

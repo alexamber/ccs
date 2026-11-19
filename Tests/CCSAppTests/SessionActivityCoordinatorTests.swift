@@ -46,6 +46,39 @@ final class SessionActivityCoordinatorTests: XCTestCase {
         XCTAssertEqual(unread, 1)
     }
 
+    func testClaudePollRetainsQuestionAndFirstStopAfterWaitNotifiesOnce() {
+        var time = Date(), reply: ((SessionUpdateMonitor.ResultType) -> Void)?
+        let activity = SessionActivityCoordinator(load: { _, done in reply = done }, now: { time })
+        defer { activity.stop() }
+        var preferences = settings(); preferences.enabledProviders = [.claude]
+        var shown = Set<UUID>(), unread = 0
+        activity.onShow = { shown.insert($0.id) }
+        activity.onUnreadChange = { unread = $0 }
+        activity.configure(preferences)
+        reply?(.success(snapshot(target("idle", provider: .claude))))
+        activity.ingest(target("waiting_input", provider: .claude).session!)
+        time += 3; activity.refresh { _ in }
+        reply?(.success(snapshot(target("waiting", provider: .claude))))
+        XCTAssertEqual(shown.count, 1)
+        XCTAssertEqual(activity.targets.first?.session?.status, "waiting_input")
+        activity.observe("claude:topic"); time += 1; activity.tick()
+        XCTAssertEqual(activity.targets.first?.session?.status, "waiting_input")
+        activity.observe(nil)
+        let stop = target("idle", provider: .claude, turn: "first-stop").session!
+        activity.ingest(stop); activity.ingest(stop)
+        XCTAssertEqual(shown.count, 2)
+        XCTAssertEqual(activity.finished, ["claude:topic"]); XCTAssertEqual(unread, 1)
+        activity.observe("claude:topic"); time += 1; activity.tick()
+        XCTAssertEqual(unread, 0)
+        activity.observe(nil)
+        activity.ingest(target("active", provider: .claude).session!)
+        time += 3; activity.refresh { _ in }
+        reply?(.success(snapshot(target("idle", provider: .claude))))
+        activity.observe("claude:topic"); time += 1; activity.tick(); activity.observe(nil)
+        activity.ingest(target("idle", provider: .claude, turn: "second-stop").session!)
+        XCTAssertEqual(unread, 0, "A Stop confirming an already announced idle poll must stay quiet")
+    }
+
     func testEventBeatsSlowPollAndDirectTerminalVisitClearsUnreadButNotAttention() {
         var clock = Date(), requests = [(SessionUpdateMonitor.ResultType) -> Void]()
         var shown = Set<UUID>(), unread = -1, status: String?

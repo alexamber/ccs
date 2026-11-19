@@ -120,6 +120,7 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
     /// Fade only the material, keeping the text sharp over Terminal content.
     private final class Surface: NSView {
         private let material = NSVisualEffectView()
+        private var materialLeading: NSLayoutConstraint!, materialBottom: NSLayoutConstraint!
         private var displayObserver: NSObjectProtocol?
         private var hoverArea: NSTrackingArea?
         var onHover: ((Bool) -> Void)?
@@ -127,14 +128,16 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         var onPointerDown: ((NSEvent) -> Void)?, onPointerMove: ((NSEvent) -> Void)?, onPointerUp: ((NSEvent) -> Void)?
         override init(frame: NSRect) {
             super.init(frame: frame)
-            wantsLayer = true; layer?.cornerRadius = 12; layer?.cornerCurve = .continuous
+            wantsLayer = true
             material.material = .popover; material.state = .active; material.blendingMode = .behindWindow
             material.wantsLayer = true; material.layer?.cornerRadius = 12
             material.layer?.cornerCurve = .continuous; material.layer?.masksToBounds = true
             material.translatesAutoresizingMaskIntoConstraints = false; addSubview(material)
+            materialLeading = material.leadingAnchor.constraint(equalTo: leadingAnchor)
+            materialBottom = material.bottomAnchor.constraint(equalTo: bottomAnchor)
             NSLayoutConstraint.activate([
-                material.leadingAnchor.constraint(equalTo: leadingAnchor), material.trailingAnchor.constraint(equalTo: trailingAnchor),
-                material.topAnchor.constraint(equalTo: topAnchor), material.bottomAnchor.constraint(equalTo: bottomAnchor),
+                materialLeading, material.trailingAnchor.constraint(equalTo: trailingAnchor),
+                material.topAnchor.constraint(equalTo: topAnchor), materialBottom,
             ])
             displayObserver = NSWorkspace.shared.notificationCenter.addObserver(
                 forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main
@@ -159,8 +162,11 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         override func mouseDragged(with event: NSEvent) { onPointerMove?(event) }
         override func mouseUp(with event: NSEvent) { onPointerUp?(event) }
         override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); updateAppearance() }
-        func setCornerRadius(_ radius: CGFloat) {
-            layer?.cornerRadius = radius; material.layer?.cornerRadius = radius
+        var backgroundInset: CGFloat { materialLeading.constant }
+        func setBackground(radius: CGFloat, lowerLeftInset: CGFloat) {
+            materialLeading.constant = lowerLeftInset
+            materialBottom.constant = -lowerLeftInset
+            material.layer?.cornerRadius = radius
         }
         private func updateAppearance() {
             material.alphaValue = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency ? 1 : 0.9
@@ -182,13 +188,8 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
             if isEnabled, onPointerUp?(event) == true, let action { sendAction(action, to: target) }
         }
     }
-    private final class UpdateIndicator: NSView {
+    private final class UpdateIndicator: NSImageView {
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
-        override func viewDidChangeEffectiveAppearance() {
-            super.viewDidChangeEffectiveAppearance()
-            layer?.backgroundColor = NSColor.systemPurple.withAlphaComponent(0.85).cgColor
-            layer?.borderColor = NSColor.windowBackgroundColor.cgColor
-        }
     }
     private final class Label: NSTextField {
         override var allowsVibrancy: Bool { false }
@@ -231,7 +232,13 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
     private var expandedConstraints = [NSLayoutConstraint]()
     private var bubbleConstraints = [NSLayoutConstraint](), introConstraints = [NSLayoutConstraint]()
     private var surfaceWidth: NSLayoutConstraint!, surfaceHeight: NSLayoutConstraint!
-    private var markTop: NSLayoutConstraint!
+    private var markTop: NSLayoutConstraint!, markTrailing: NSLayoutConstraint!
+    private var markWidth: NSLayoutConstraint!, indicatorLeading: NSLayoutConstraint!, indicatorBottom: NSLayoutConstraint!
+    private var headingClearance: NSLayoutConstraint!, headingHeight: NSLayoutConstraint!
+    private var iconSize = UnicornSize.medium
+    private var compactSide: CGFloat { 56 * iconSize.scale }
+    private var markInset: CGFloat { 7 * iconSize.scale }
+    private var titleLeading: NSLayoutConstraint!, titleTrailing: NSLayoutConstraint!
     private var session: Session?, tab: TerminalTabSnapshot?
     private var hovering = false
     private var hoverDelay: DispatchWorkItem?
@@ -240,9 +247,19 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
     private var persistent = false
     private var overviewPresented = false
     let speech = SessionSpeechBubble()
+    static let notificationChirp: NSSound? = {
+        let url = Bundle.main.url(forResource: "Grasshopper", withExtension: "caf")
+            ?? Bundle.module.url(forResource: "Grasshopper", withExtension: "caf")
+        return url.flatMap { NSSound(contentsOf: $0, byReference: false) }
+    }()
+    var playNotificationSound: () -> Void = {
+        guard let chirp = TerminalSessionPopup.notificationChirp else { return }
+        if chirp.isPlaying { chirp.stop() }
+        chirp.play()
+    }
     private var lastNotificationID: UUID?
     private var terminalContextActive = false
-    let updateIndicator: NSView = UpdateIndicator()
+    let updateIndicator: NSImageView = UpdateIndicator()
     private var drag = BubbleDrag()
     private var interruptedTransition = false
     private let saveAnchor: (NSPoint) -> Void
@@ -277,13 +294,16 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
             button.isBordered = false; button.font = .systemFont(ofSize: 13, weight: .semibold)
             button.target = self; button.action = #selector(expand)
             button.translatesAutoresizingMaskIntoConstraints = false; surface.addSubview(button)
+            let leading = button.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: 16)
+            let trailing = button.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -10)
             let constraints = [
-                button.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: 16),
-                button.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: button === intro ? -60 : -10),
+                leading, trailing,
                 button.topAnchor.constraint(equalTo: surface.topAnchor, constant: 8),
                 button.bottomAnchor.constraint(equalTo: surface.bottomAnchor, constant: -8),
             ]
-            if button === intro { introConstraints = constraints } else { bubbleConstraints = constraints }
+            if button === intro {
+                introConstraints = constraints; titleLeading = leading; titleTrailing = trailing
+            } else { bubbleConstraints = constraints }
             button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         }
         intro.cell?.wraps = true; intro.cell?.usesSingleLineMode = false; intro.cell?.lineBreakMode = .byWordWrapping
@@ -298,12 +318,13 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         close.toolTip = "Hide bubble"
         let heading = NSView()
         for view in [title, close] { view.translatesAutoresizingMaskIntoConstraints = false; heading.addSubview(view) }
+        headingClearance = close.trailingAnchor.constraint(equalTo: heading.trailingAnchor, constant: -44)
+        headingHeight = heading.heightAnchor.constraint(greaterThanOrEqualToConstant: 32)
         NSLayoutConstraint.activate([
             title.leadingAnchor.constraint(equalTo: heading.leadingAnchor), title.topAnchor.constraint(equalTo: heading.topAnchor),
             title.bottomAnchor.constraint(equalTo: heading.bottomAnchor),
             title.trailingAnchor.constraint(equalTo: close.leadingAnchor, constant: -8),
-            close.trailingAnchor.constraint(equalTo: heading.trailingAnchor, constant: -44),
-            heading.heightAnchor.constraint(greaterThanOrEqualToConstant: 24),
+            headingClearance, headingHeight,
             close.topAnchor.constraint(equalTo: heading.topAnchor), close.widthAnchor.constraint(equalToConstant: 20), close.heightAnchor.constraint(equalToConstant: 20),
         ])
         let metadata = NSView()
@@ -363,19 +384,21 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
             guard let self else { return }
             if self.endPointerInteraction(at: NSEvent.mouseLocation) { self.toggleExpansion() }
         }
-        updateIndicator.wantsLayer = true; updateIndicator.layer?.cornerRadius = 4.5
-        updateIndicator.layer?.backgroundColor = NSColor.systemPurple.withAlphaComponent(0.85).cgColor
-        updateIndicator.layer?.borderWidth = 1.5; updateIndicator.layer?.borderColor = NSColor.windowBackgroundColor.cgColor
+        updateIndicator.image = BrandIcon.resource("Firefly")
+        updateIndicator.imageScaling = .scaleProportionallyUpOrDown
         updateIndicator.isHidden = true; updateIndicator.translatesAutoresizingMaskIntoConstraints = false
         updateIndicator.setAccessibilityElement(false); surface.addSubview(updateIndicator)
-        NSLayoutConstraint.activate([updateIndicator.trailingAnchor.constraint(equalTo: mark.trailingAnchor, constant: 3),
-            updateIndicator.bottomAnchor.constraint(equalTo: mark.bottomAnchor, constant: 3),
-            updateIndicator.widthAnchor.constraint(equalToConstant: 9), updateIndicator.heightAnchor.constraint(equalToConstant: 9)])
-        markTop = mark.topAnchor.constraint(equalTo: surface.topAnchor, constant: 10)
+        // The firefly sits at the lower-left corner of the compact launcher.
+        indicatorLeading = updateIndicator.leadingAnchor.constraint(equalTo: mark.leadingAnchor, constant: -11.65)
+        indicatorBottom = updateIndicator.bottomAnchor.constraint(equalTo: mark.bottomAnchor, constant: 11.65)
+        markTop = mark.topAnchor.constraint(equalTo: surface.topAnchor, constant: markInset)
+        markTrailing = mark.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -markInset)
+        markWidth = mark.widthAnchor.constraint(equalToConstant: 36)
         NSLayoutConstraint.activate([
-            mark.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -10),
-            markTop,
-            mark.widthAnchor.constraint(equalToConstant: 36), mark.heightAnchor.constraint(equalToConstant: 36),
+            markTop, markTrailing, markWidth, mark.heightAnchor.constraint(equalTo: mark.widthAnchor),
+            indicatorLeading, indicatorBottom,
+            updateIndicator.widthAnchor.constraint(equalTo: mark.widthAnchor, multiplier: 0.5),
+            updateIndicator.heightAnchor.constraint(equalTo: updateIndicator.widthAnchor),
         ])
         surfaceWidth = surface.widthAnchor.constraint(equalToConstant: 56)
         surfaceHeight = surface.heightAnchor.constraint(equalToConstant: 56)
@@ -387,13 +410,23 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         }
     }
     deinit { if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) } }
-    func configureFloating(enabled: Bool, allSpaces: Bool) {
+    func configureFloating(enabled: Bool, allSpaces: Bool, size: UnicornSize = .medium) {
+        let sizeChanged = size != iconSize
+        if sizeChanged {
+            iconSize = size
+            markWidth.constant = 36 * size.scale
+            indicatorLeading.constant = -11.65 * size.scale
+            indicatorBottom.constant = 11.65 * size.scale
+            headingClearance.constant = -(compactSide - 12)
+            headingHeight.constant = max(24, compactSide - 24)
+        }
         persistent = enabled
         panel.collectionBehavior = allSpaces ? [.canJoinAllSpaces, .fullScreenAuxiliary, .transient] : [.fullScreenAuxiliary, .transient]
         guard enabled else { hide(); return }
         if placement == nil, let saved = UserDefaults.standard.dictionary(forKey: "unicornAnchor"),
            let x = saved["x"] as? Double, let y = saved["y"] as? Double, x.isFinite, y.isFinite { placement = NSPoint(x: x, y: y) }
         if !panel.isVisible { showLauncher(clearSession: false) }
+        else if sizeChanged { setPhase(phase, animate: false) }
         if placement == nil { placement = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY) }
     }
     func moveAnchor(to point: NSPoint) {
@@ -406,11 +439,11 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         morph?.stop(); morph = nil; morphRevision += 1
         hoverDelay?.cancel()
         mark.layer?.removeAnimation(forKey: "session-update")
-        let anchor = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
-        let onCompactBubble = (0...56).contains(anchor.x - point.x) && (0...56).contains(anchor.y - point.y)
+        let anchor = NSPoint(x: panel.frame.maxX + markTrailing.constant + markInset, y: panel.frame.maxY)
+        let onCompactBubble = (0...compactSide).contains(anchor.x - point.x) && (0...compactSide).contains(anchor.y - point.y)
         // Grabbing the expanded name/card should bring the compact unicorn
         // under that grip, rather than leave it hundreds of points to the side.
-        drag.begin(at: point, anchor: onCompactBubble ? anchor : NSPoint(x: point.x + 28, y: point.y + 28))
+        drag.begin(at: point, anchor: onCompactBubble ? anchor : NSPoint(x: point.x + compactSide / 2, y: point.y + compactSide / 2))
     }
     func movePointerInteraction(to point: NSPoint) {
         let wasDragging = drag.didDrag
@@ -450,8 +483,9 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         mark.toolTip = help; mark.setAccessibilityHelp(help)
     }
     var canShowNotification: Bool { persistent && panel.isVisible && !drag.isTracking && !overviewPresented && phase != .expanded }
-    func notify(_ update: SessionUpdate, bubble: Bool, wiggle: Bool) {
+    func notify(_ update: SessionUpdate, bubble: Bool, wiggle: Bool, sound: Bool) {
         guard canShowNotification else { speech.hide(); return }
+        if lastNotificationID != update.id, sound { playNotificationSound() }
         if lastNotificationID != update.id, wiggle, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             let motion = CAKeyframeAnimation(keyPath: "transform.rotation.z")
             motion.values = [0, -0.12, 0.10, -0.06, 0]; motion.duration = 0.45
@@ -543,10 +577,13 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         NSLayoutConstraint.deactivate(expandedConstraints + introConstraints + bubbleConstraints)
         stack.isHidden = true; intro.isHidden = true; bubble.isHidden = true
         stack.layoutSubtreeIfNeeded()
-        let size: NSSize = value == .expanded ? NSSize(width: 380, height: max(220, stack.fittingSize.height + 32)) : value == .title ? NSSize(width: 320, height: 56) : NSSize(width: 56, height: 56)
+        let size: NSSize = value == .expanded ? NSSize(width: 380, height: max(220, stack.fittingSize.height + 32)) : value == .title ? NSSize(width: 320, height: compactSide) : NSSize(width: compactSide, height: compactSide)
         let startFrame = panel.frame, startRadius = cornerRadius, startMarkTop = markTop.constant
-        let endRadius: CGFloat = value == .expanded ? 16 : size.height / 2
-        let endMarkTop: CGFloat = value == .expanded ? 8 : 10
+        // Give the compact circle equal padding around the unicorn while the firefly overhangs its rim.
+        let startInset = surface.backgroundInset
+        let endInset = value == .collapsed ? compactSide - markWidth.constant - 2 * markInset : 0
+        let endRadius: CGFloat = value == .expanded ? 16 : (size.height - endInset) / 2
+        let endMarkTop = markInset
         var frame = panel.frame
         frame.origin.x += frame.width - size.width; frame.origin.y += frame.height - size.height; frame.size = size
         if placement == nil, let tab, let primary = NSScreen.screens.first {
@@ -564,12 +601,28 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         } else if tab == nil, let screen = NSScreen.main {
             frame.origin = NSPoint(x: screen.visibleFrame.maxX - size.width - 16, y: screen.visibleFrame.maxY - size.height - 50)
         }
+        var endMarkTrailing = -markInset
+        let startMarkTrailing = markTrailing.constant
+        let compact = NSRect(x: frame.maxX - compactSide, y: frame.maxY - compactSide, width: compactSide, height: compactSide)
         if let screen = NSScreen.screens.max(by: {
-            let a = $0.frame.intersection(frame), b = $1.frame.intersection(frame)
+            let a = $0.frame.intersection(compact), b = $1.frame.intersection(compact)
             return (a.isNull ? 0 : a.width * a.height) < (b.isNull ? 0 : b.width * b.height)
         }) {
             let visible = screen.visibleFrame
-            frame.origin.x = min(max(frame.minX, visible.minX + 8), visible.maxX - size.width - 8)
+            if value == .title {
+                // Fit the name on one side of the controls. Both endpoints of the animation
+                // put the unicorn at the same screen coordinates.
+                let right = min(max(compact.maxX, visible.minX + 8 + compactSide), visible.maxX - 8)
+                let left = right - compactSide
+                let roomLeft = right - (visible.minX + 8), roomRight = visible.maxX - 8 - left
+                let growRight = roomLeft < size.width && roomRight > roomLeft
+                frame.size.width = min(size.width, growRight ? roomRight : roomLeft)
+                frame.origin.x = growRight ? left : right - frame.width
+                endMarkTrailing = right - frame.maxX - markInset
+                titleLeading.constant = growRight ? compactSide + 4 : 16
+                titleTrailing.constant = growRight ? -16 : -compactSide - 4
+            }
+            frame.origin.x = min(max(frame.minX, visible.minX + 8), visible.maxX - frame.width - 8)
             frame.origin.y = min(max(frame.minY, visible.minY + 8), visible.maxY - size.height - 8)
         }
         let update: (CGFloat) -> Void = { [weak self] progress in
@@ -579,7 +632,9 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
                               width: blend(startFrame.width, frame.width), height: blend(startFrame.height, frame.height))
             self.surfaceWidth.constant = next.width; self.surfaceHeight.constant = next.height
             self.markTop.constant = blend(startMarkTop, endMarkTop)
-            self.cornerRadius = blend(startRadius, endRadius); self.surface.setCornerRadius(self.cornerRadius)
+            self.markTrailing.constant = blend(startMarkTrailing, endMarkTrailing)
+            self.cornerRadius = blend(startRadius, endRadius)
+            self.surface.setBackground(radius: self.cornerRadius, lowerLeftInset: blend(startInset, endInset))
             self.panel.setFrame(next, display: true, animate: false)
             self.surface.layoutSubtreeIfNeeded()
             if progress >= 1 {

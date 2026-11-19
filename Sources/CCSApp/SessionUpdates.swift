@@ -13,6 +13,7 @@ struct SessionUpdate {
 struct SessionUpdateTracker {
     private var previous = [String: SessionActivity]()
     private var turns = [String: SessionActivityTurn]()
+    private var inferredClaudeCompletions = Set<String>()
     private var attentionStatus = [String: String]()
     private var initialized = false
     private(set) var finished = Set<String>()
@@ -31,19 +32,28 @@ struct SessionUpdateTracker {
         attention = []
         for target in targets {
             let oldAttention = attentionStatus[target.key]
-            let previousTurn = turns[target.key]
-            let turn = target.session?.activityTurn
-            if let turn { turns[target.key] = turn }
-            let completed: Bool
-            if let turn {
-                completed = turn.status == "completed" &&
-                    (previousTurn.map { $0 != turn } ?? (previous[target.key] == .busy))
-            } else { completed = previous[target.key] == .busy }
             let activity = SessionActivity(status: target.session?.status ?? "unknown")
             if activity == .unknown {
                 next[target.key] = previous[target.key]
                 continue
             }
+            let previousTurn = turns[target.key]
+            let turn = target.session?.activityTurn
+            if let turn { turns[target.key] = turn }
+            let completed: Bool
+            if target.session?.provider == .claude {
+                if activity == .busy || activity == .attention { inferredClaudeCompletions.remove(target.key) }
+                if let turn, turn.status == "completed" {
+                    let alreadyReported = inferredClaudeCompletions.remove(target.key) != nil
+                    completed = previous[target.key] != nil && previousTurn != turn && !alreadyReported
+                } else {
+                    completed = activity == .ready && previous[target.key] == .busy
+                    if completed { inferredClaudeCompletions.insert(target.key) }
+                }
+            } else if let turn {
+                completed = turn.status == "completed" &&
+                    (previousTurn.map { $0 != turn } ?? (previous[target.key] == .busy))
+            } else { completed = previous[target.key] == .busy }
             let reason = SessionActivity.attentionReason(target.session?.status)
             attentionStatus[target.key] = reason
             next[target.key] = activity
@@ -61,6 +71,7 @@ struct SessionUpdateTracker {
         for (key, value) in previous where snapshot.unavailableProviders.contains(where: { key.hasPrefix($0.rawValue + ":") }) && next[key] == nil {
             next[key] = value
         }
+        inferredClaudeCompletions.formIntersection(next.keys)
         previous = next; initialized = true
         return updates
     }
@@ -138,11 +149,8 @@ final class SessionUpdateMonitor {
             self.loading = false
             guard revision == self.generation else { self.refresh(); return }
             var delivered = result
-            if case .success(var snapshot) = result {
-                self.overrides = self.overrides.filter { self.now().timeIntervalSince($0.value.date) < 60 }
-                for value in self.overrides.values where value.date >= started {
-                    snapshot = self.replacing(value.session, in: snapshot) ?? snapshot
-                }
+            if case .success(let loaded) = result {
+                let snapshot = self.reconcilePoll(loaded, started: started)
                 self.cached = (snapshot, self.now()); self.receive(snapshot)
                 delivered = .success(snapshot)
             }
@@ -150,4 +158,24 @@ final class SessionUpdateMonitor {
             callbacks.forEach { $0(delivered) }
         }
     }
+    private func reconcilePoll(_ loaded: TerminalActivitySnapshot, started: Date) -> TerminalActivitySnapshot {
+        overrides = overrides.filter { now().timeIntervalSince($0.value.date) < 60 }
+        let previous = Dictionary((cached?.snapshot.context.targets ?? []).compactMap { target in
+            target.session.map { (target.key, $0.status) }
+        }, uniquingKeysWith: { first, _ in first })
+        let targets = loaded.context.targets.map { target -> TerminalSwitchTarget in
+            guard var session = target.session else { return target }
+            if let event = overrides[target.key], event.date >= started {
+                session = event.session
+            } else if session.provider == .claude, session.status == "waiting", let status = previous[target.key],
+                      ["waiting_input", "waiting_for_input", "waiting_for_approval"].contains(status) {
+                // A generic poll does not change the reason for an ongoing Claude wait.
+                session.status = status
+            } else { return target }
+            return TerminalSwitchTarget(session: session, tab: target.tab, processID: target.processID)
+        }
+        return TerminalActivitySnapshot(context: TerminalSwitchContext(targets: targets, currentKey: loaded.context.currentKey,
+            keysByTTY: loaded.context.keysByTTY), unavailableProviders: loaded.unavailableProviders)
+    }
+
 }
