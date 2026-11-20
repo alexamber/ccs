@@ -1,0 +1,166 @@
+import Foundation
+
+/// Apple Terminal identifies a tab by its local TTY.
+struct AppleTerminalAdapter: TerminalAdapter {
+    static let id = "com.apple.Terminal"
+    let bundleID = id
+    let name = "Terminal"
+    let runner: CommandRunner
+
+    func frontTab() -> TerminalTabSnapshot? {
+        guard let result = try? runner("/usr/bin/osascript", ["-"], Self.frontTabScript, 2), result.code == 0 else { return nil }
+        return TerminalTabSnapshot(output: result.out)
+    }
+
+    func selectedTTY() throws -> String? {
+        let result = try runner("/usr/bin/osascript", ["-"], Self.selectedTTYScript, 2)
+        guard result.code == 0 else { throw CCSError.message("Couldn’t read the current Terminal tab.") }
+        let tty = result.out.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tty.isEmpty else { return nil }
+        guard tty.hasPrefix("/dev/tty"), !tty.contains(where: \.isWhitespace) else {
+            throw CCSError.message("Terminal returned an invalid tab identifier.")
+        }
+        return tty
+    }
+
+    func tabs() throws -> TerminalTabs {
+        let result = try runner("/usr/bin/osascript", ["-"], Self.switchTabsScript, 3)
+        guard result.code == 0 else { throw CCSError.message("Couldn’t read Terminal tabs. Check CCS’s Terminal Automation permission.") }
+        let parts = result.out.components(separatedBy: "\u{1e}")
+        let currentTTY = parts.first ?? ""
+        guard parts.count > 1 || result.out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw CCSError.message("Terminal returned an incomplete tab list. Refresh and try again.")
+        }
+        let tabs = try parts.dropFirst().map { record -> TerminalTabSnapshot in
+            let fields = record.components(separatedBy: "\u{1f}")
+            guard fields.count == 6, let tab = TerminalTabSnapshot(output: fields.joined(separator: "\n")) else {
+                throw CCSError.message("Terminal returned an unreadable tab. Refresh and try again.")
+            }
+            return tab
+        }
+        return TerminalTabs(tabs: tabs, selectedTTY: currentTTY)
+    }
+
+    func focus(paneID: String, title: String) throws {
+        let result = try runner("/usr/bin/osascript", ["-", title, paneID], Self.focusScript, 5)
+        guard result.code == 0, result.out.trimmingCharacters(in: .whitespacesAndNewlines) == "ok" else {
+            throw CCSError.message("Couldn’t focus that Terminal tab. Refresh and try again.")
+        }
+    }
+
+    func launch(command: String, title: String) throws {
+        let result = try runner("/usr/bin/osascript", ["-", title, command], Self.launchScript, 15)
+        guard result.code == 0 else {
+            throw CCSError.message(result.err.trimmingCharacters(in: .whitespacesAndNewlines).nonempty ?? "Could not open Terminal.app. Check CCS’s Terminal Automation permission.")
+        }
+    }
+
+    // Never launch or activate Terminal. An app switch between the native
+    // frontmost check and this Apple event must not produce a popup.
+    static let frontTabScript = """
+    if application "Terminal" is not running then return ""
+    tell application "Terminal"
+      if not frontmost then return ""
+      if (count of windows) is 0 then return ""
+      set w to front window
+      set device to tty of selected tab of w
+      set edges to bounds of w
+      return device & linefeed & (item 1 of edges as text) & linefeed & (item 2 of edges as text) & linefeed & (item 3 of edges as text) & linefeed & (item 4 of edges as text) & linefeed & (custom title of selected tab of w)
+    end tell
+    """
+    public static let selectedTTYScript = """
+    if application "Terminal" is not running then return ""
+    tell application "Terminal"
+      if (count of windows) is 0 then return ""
+      return tty of selected tab of front window
+    end tell
+    """
+
+    public static let switchTabsScript = """
+    if application "Terminal" is not running then return ""
+    set fs to ASCII character 31
+    set rs to ASCII character 30
+    tell application "Terminal"
+      set output to ""
+      if (count of windows) is 0 then return ""
+      set output to tty of selected tab of front window
+      repeat with w in windows
+        set edges to bounds of w
+        repeat with t in tabs of w
+          set output to output & rs & tty of t & fs & (item 1 of edges as text) & fs & (item 2 of edges as text) & fs & (item 3 of edges as text) & fs & (item 4 of edges as text) & fs & custom title of t
+        end repeat
+      end repeat
+      return output
+    end tell
+    """
+    // Keep cosmetic errors inside this handler: a successful focus or launch
+    // must never become a failed action (or trigger a duplicate launch).
+    static let titleScript = """
+    on nameTab(targetTab, newTitle)
+      try
+        if newTitle is "" then return
+        tell application "Terminal"
+          considering case, diacriticals
+            if custom title of targetTab is not newTitle then set custom title of targetTab to newTitle
+          end considering
+        end tell
+      end try
+    end nameTab
+    """
+    public static let launchScript = """
+    on run argv
+      tell application "Terminal"
+        set openedTab to do script (item 2 of argv)
+        my nameTab(openedTab, item 1 of argv)
+        activate
+      end tell
+    end run
+    """ + "\n" + titleScript
+    public static let focusScript = """
+    on run argv
+      tell application "Terminal"
+        repeat with candidate in items 2 thru -1 of argv
+          set wanted to contents of candidate
+          repeat with w in windows
+            try
+              set wtabs to tabs of w
+            on error
+              set wtabs to {}
+            end try
+            repeat with t in wtabs
+              if tty of t is wanted then
+                set selected of t to true
+                set index of w to 1
+                my nameTab(t, item 1 of argv)
+                activate
+                return "ok"
+              end if
+            end repeat
+          end repeat
+        end repeat
+      end tell
+      return "missing"
+    end run
+    """ + "\n" + titleScript
+}
+
+extension TerminalTabSnapshot {
+    public init?(output: String) {
+        let lines = output.split(maxSplits: 5, whereSeparator: \.isNewline).map(String.init)
+        guard lines.count >= 5, lines[0].hasPrefix("/dev/tty") else { return nil }
+        let edges = lines[1...4].compactMap(Double.init)
+        guard edges.count == 4, edges.allSatisfy(\.isFinite),
+              edges[2] > edges[0], edges[3] > edges[1] else { return nil }
+        terminalID = AppleTerminalAdapter.id
+        paneID = lines[0]
+        tty = lines[0]
+        title = lines.count == 6 ? cleanText(lines[5]) : ""
+        bounds = CGRect(x: edges[0], y: edges[1], width: edges[2] - edges[0], height: edges[3] - edges[1])
+    }
+
+    public static func read(runner: @escaping CommandRunner = ProcessRunner().command) -> TerminalTabSnapshot? {
+        AppleTerminalAdapter(runner: runner).frontTab()
+    }
+
+    public static let script = AppleTerminalAdapter.frontTabScript
+}

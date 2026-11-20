@@ -3,6 +3,7 @@ import Carbon
 import CCSCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    private let terminals = TerminalRegistry.system()
     let engine = Engine(), hotkey = HotKey()
     private let nextSessionKey = HotKey(id: 2), previousSessionKey = HotKey(id: 3)
     private let sessionSwitcher = SessionSwitcher()
@@ -47,7 +48,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         activity.onHide = { [weak self] in self?.terminalPopup.speech.hide() }
         activity.onUnreadChange = { [weak self] in self?.terminalPopup.setUpdateCount($0) }
         activity.onSnapshot = { [weak self] snapshot, finished in
-            guard let self, self.sessionOverview.isShown else { return }
+            guard let self else { return }
+            self.popup.updateFinished(finished)
+            guard self.sessionOverview.isShown else { return }
             self.sessionOverview.supply(snapshot, finished: finished, generation: self.sessionOverview.generation)
         }
         claudeEvents = DistributedNotificationCenter.default().addObserver(forName: ClaudeActivityHook.notification, object: nil, queue: .main) { [weak self] note in
@@ -60,12 +63,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }; self.refreshSessionOverview(generation: self.sessionOverview.generation)
         }
         popup.onSettings = { [weak self] in self?.showSettings() }
-        preferences = Preferences(settings: settings, engine: engine)
+        preferences = Preferences(settings: settings, engine: engine, terminals: terminals)
         preferences.onSave = { [weak self] value in try self?.updateSettings(value) }
         let terminalQueue = DispatchQueue(label: "io.github.alexamber.ccs.terminal", qos: .utility)
-        terminalMonitor = TerminalSessionMonitor(readTab: { completion in
+        terminalMonitor = TerminalSessionMonitor(frontmost: { [terminals] in
+            terminals.supported(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier) != nil
+        }, isCurrentTerminal: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier == $0 }, readTab: { [terminals] completion in
+            let adapter = terminals.supported(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
             terminalQueue.async {
-                let tab = TerminalTabSnapshot.read()
+                let tab = adapter?.frontTab()
                 DispatchQueue.main.async { completion(tab) }
             }
         }, loadSession: { [weak self] tab, completion in
@@ -162,7 +168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             terminalMonitor?.configure(enabled: value.terminalPopups)
             terminalPopup.configureFloating(enabled: value.terminalPopups, allSpaces: value.unicornAllSpaces, size: value.unicornSize)
             let reset = old.enabledProviders != value.enabledProviders || old.terminalPopups != value.terminalPopups
-            if reset { sessionOverview.close() }
+            if reset { sessionOverview.close(); popup.updateFinished([]) }
             activity.configure(value)
             configureActivityEvents()
         } catch {
@@ -256,14 +262,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func switchSession(step: Int) {
         guard !preferences.finishRecordingCurrentShortcut() else { return }
         if sessionSwitcher.panel.isVisible { sessionSwitcher.cycle(step); return }
-        let sourceWasTerminal = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Terminal"
+        let origin = terminals.supported(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)?.bundleID
         let cached = Date().timeIntervalSince(switchUpdated) < 30 ? orderedTargets(switchTargets) : []
         let keysByTTY = switchKeysByTTY
         popup.hide(restoreFocus: false); sessionOverview.close(); terminalPopup.collapse(restoreFocus: false)
         let presentation = sessionSwitcher.show(targets: cached, step: step)
         if !cached.isEmpty {
-            if sourceWasTerminal {
-                engine.loadSwitchOrigin { [weak self] result in
+            if let origin {
+                engine.loadSwitchOrigin(terminalID: origin) { [weak self] result in
                     guard let self, self.sessionSwitcher.presentation == presentation else { return }
                     do {
                         let tty = try result.get()
@@ -276,12 +282,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         let enabled = settings.enabledProviders
-        engine.loadSwitchContext(enabledProviders: enabled) { [weak self] result in
+        engine.loadSwitchContext(enabledProviders: enabled, originTerminalID: origin) { [weak self] result in
             guard let self, self.settings.enabledProviders == enabled else { return }
             let sameGesture = self.sessionSwitcher.presentation == presentation
             do {
                 let context = try result.get()
-                let current = sourceWasTerminal ? context.currentKey : nil
+                let current = origin != nil ? context.currentKey : nil
                 if sameGesture, let current { self.rememberSwitch(current) }
                 self.switchTargets = self.orderedTargets(context.targets)
                 self.switchKeysByTTY = context.keysByTTY

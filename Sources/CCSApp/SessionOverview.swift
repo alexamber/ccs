@@ -215,7 +215,7 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
         let status = !enabled ? "No longer confirmed" : finished.contains(target.key) ? "Finished" : SessionActivity.description(for: target.session)
         let detail = NSTextField(labelWithString: status + " · " + target.subtitle)
         detail.font = .systemFont(ofSize: 10); detail.textColor = .secondaryLabelColor
-        let dot = StatusDot(color: activity.tint)
+        let dot = StatusDot(color: activity.tint(unattended: finished.contains(target.key)))
         dot.translatesAutoresizingMaskIntoConstraints = false
         dot.widthAnchor.constraint(equalToConstant: 7).isActive = true; dot.heightAnchor.constraint(equalToConstant: 7).isActive = true
         let text = NSStackView(views: [name, detail]); text.orientation = .vertical; text.alignment = .leading; text.spacing = 0

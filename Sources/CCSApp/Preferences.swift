@@ -8,6 +8,8 @@ final class Preferences: NSObject {
     var onSave: ((Settings) throws -> Void)?
     private let engine: Engine
     private let shortcut = ShortcutRecorder()
+    private let terminals: TerminalRegistry
+    private let terminalChoice = NSPopUpButton()
     private let days = NSPopUpButton()
     private let newProvider = NSPopUpButton()
     private let newProviderValue = NSTextField(labelWithString: "")
@@ -33,9 +35,10 @@ final class Preferences: NSObject {
         shortcut.cancelRecording(); return true
     }
 
-    init(settings: Settings, engine: Engine) {
+    init(settings: Settings, engine: Engine, terminals: TerminalRegistry = .system()) {
+        self.terminals = terminals
         self.settings = settings; self.engine = engine
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 680), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 712), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init()
         window.title = "CCS Settings"; window.isReleasedWhenClosed = false; window.center()
         shortcut.controlSize = .small; shortcut.font = .systemFont(ofSize: 12)
@@ -48,6 +51,9 @@ final class Preferences: NSObject {
             do { try self.onSave?(self.settings); self.shortcut.savedTitle = label }
             catch { self.settings = old; self.shortcut.title = old.hotkeyLabel; showError(error, window: self.window) }
         }
+        terminalChoice.setAccessibilityLabel("Default terminal for new sessions")
+        terminalChoice.controlSize = .small
+        terminalChoice.target = self; terminalChoice.action = #selector(changeTerminal)
         days.addItems(withTitles: ["1 day", "3 days", "7 days", "30 days", "All"])
         days.selectItem(at: dateWindows.firstIndex(of: settings.defaultDays) ?? 2)
         days.toolTip = "Date range when opening the picker. Running sessions are always included."
@@ -97,7 +103,7 @@ final class Preferences: NSObject {
         let defaults = NSStackView(views: [grouping, days]); defaults.spacing = 8
         let sources = NSStackView(views: [claudeToggle, codexToggle]); sources.spacing = 14
         let newChoice = NSStackView(views: [newProvider, newProviderValue])
-        let picker = section("Picker", rows: [row(label("Providers"), sources), row(label("Shortcut"), shortcut), row(label("Open with"), defaults), row(label("New sessions"), newChoice), row(label("Start at login"), login)])
+        let picker = section("Picker", rows: [row(label("Providers"), sources), row(label("Shortcut"), shortcut), row(label("Open with"), defaults), row(label("New sessions"), newChoice), row(label("Default terminal"), terminalChoice), row(label("Start at login"), login)])
         let sessions = section("Sessions", rows: [row(folderText, choose, minimumHeight: 28), row(cleanupLabel, cleanup)])
         let appearance = NSStackView(views: [iconSize, terminalPopups]); appearance.spacing = 12
         let unicorn = section("Floating unicorn", rows: [row(label("Show unicorn"), appearance), row(label("Show on every desktop"), allSpaces),
@@ -153,6 +159,19 @@ final class Preferences: NSObject {
         settings = value
         if shortcutChanged { shortcut.cancelRecording() }
         if !shortcut.recording { shortcut.title = value.hotkeyLabel; shortcut.savedTitle = value.hotkeyLabel }
+        terminalChoice.removeAllItems()
+        terminalChoice.addItem(withTitle: "Automatic")
+        for adapter in terminals.installed {
+            terminalChoice.addItem(withTitle: adapter.name)
+            terminalChoice.lastItem?.representedObject = adapter.bundleID
+        }
+        if let preferred = value.defaultTerminalID {
+            if terminalChoice.itemArray.allSatisfy({ ($0.representedObject as? String) != preferred }) {
+                terminalChoice.addItem(withTitle: "Unavailable (\(preferred))")
+                terminalChoice.lastItem?.representedObject = preferred
+            }
+            terminalChoice.selectItem(at: terminalChoice.indexOfItem(withRepresentedObject: preferred))
+        }
         days.selectItem(at: dateWindows.firstIndex(of: value.defaultDays) ?? 2)
         grouping.selectedSegment = value.folders ? 1 : 0
         newProvider.removeAllItems(); newProvider.addItems(withTitles: value.enabledProviders.map(\.title))
@@ -179,6 +198,12 @@ final class Preferences: NSObject {
         for control in [allSpaces, notifyAttention, notifyCompletion] { control.isEnabled = value.terminalPopups }
         for control in [notificationBubble, notificationWiggle, notificationSound] { control.isEnabled = value.terminalPopups && (value.notifyAttention || value.notifyCompletion) }
         refreshFolder()
+    }
+    @objc private func changeTerminal() {
+        let old = settings
+        settings.defaultTerminalID = terminalChoice.selectedItem?.representedObject as? String
+        do { try onSave?(settings) }
+        catch { apply(old); showError(error, window: window) }
     }
     @objc private func changeNewProvider() {
         let old = settings

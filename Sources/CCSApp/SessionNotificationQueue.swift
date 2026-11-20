@@ -12,11 +12,19 @@ final class SessionNotificationQueue {
     private var lastTick: Date?
     private var viewedKey: String?, viewedSince: Date?, acknowledgedView = false
     var hovered = false
+    var hasUnattendedCompletion: (String) -> Bool = { _ in false }
     var canPresent: () -> Bool = { true }
     var onShow: ((SessionUpdate) -> Void)?, onHide: (() -> Void)?, onChange: (() -> Void)?, onViewed: ((String) -> Void)?
     var unreadCount: Int { unread.count }
     var queuedCount: Int { pending.count }
-    var needsTick: Bool { current != nil || !pending.isEmpty || (!unread.isEmpty && viewedKey != nil && !acknowledgedView) }
+    var needsTick: Bool {
+        if current != nil || !pending.isEmpty { return true }
+        guard let viewedKey, !acknowledgedView else { return false }
+        return unread[viewedKey] != nil || hasUnattendedCompletion(viewedKey)
+    }
+    func completionArrived(for key: String) {
+        if viewedKey == key { viewedSince = now(); acknowledgedView = false }
+    }
     init(now: @escaping () -> Date = Date.init) { self.now = now }
     func enqueue(_ updates: [SessionUpdate]) {
         for update in updates {

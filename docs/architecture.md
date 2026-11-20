@@ -33,6 +33,21 @@ live state prevents Claude resume. Existing Terminal tabs are matched by process
 commands are passed as quoted arguments to AppleScript rather than interpolated
 into AppleScript source.
 
+Both executables route terminal operations through `TerminalRegistry`. To support
+another macOS terminal, implement `TerminalAdapter` and register it in
+`TerminalRegistry.system`. Launch Services discovers installed registered apps by
+bundle ID. Registration order determines the automatic launch preference. An
+explicit preference is saved by bundle ID. If the chosen terminal is missing,
+the launch fails with a message directing the user to Settings.
+
+An adapter provides a complete list of local panes, the selected TTY, the
+frontmost pane and its window bounds, and operations to focus a pane or launch a
+command. Each snapshot carries its terminal bundle ID, native pane ID and local
+TTY. CCS shares one process snapshot across terminals to match conversations.
+Option-Tab captures the originating terminal before its chooser takes focus.
+Selecting a target revalidates its owner, pane, TTY and conversation or process.
+An incomplete inventory blocks automatic resume of an already loaded conversation.
+
 Launch/focus scripts set the selected tab's custom title only when it differs.
 The title is a separate argument, and a local AppleScript error handler keeps
 cosmetic failures from failing the action. There is no title-ownership cache.
@@ -71,7 +86,7 @@ uses the existing Apple-events permission, with no Accessibility observer.
 notices, acknowledgement, and the notification timer. Provider adapters remain
 separate: Codex events and Claude hooks feed the same event/poll reconciliation
 used by five-second recovery reads. AppDelegate connects native UI callbacks;
-the coordinator delivers status and finished-state changes to the open overview.
+the coordinator delivers status and finished-state changes to the overview and session picker.
 Alert preferences filter delivery without stopping monitoring or resetting its
 baseline. Muting clears queued notices, and unmuting does not replay observed
 changes. Disabling the unicorn or changing providers invalidates pending reads

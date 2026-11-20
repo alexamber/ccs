@@ -84,22 +84,22 @@ final class Engine {
         activitySessions.removeAll { $0.key == session.key }; activitySessions.append(session)
     }
 
-    func loadSwitchOrigin(completion: @escaping (Result<String?, Error>) -> Void) {
+    func loadSwitchOrigin(terminalID: String, completion: @escaping (Result<String?, Error>) -> Void) {
         originGeneration += 1
         let generation = originGeneration
         originRequest?.cancel()
-        originRequest = perform(on: switchOrigin, { service, _ in try service.selectedTerminalTTY() }) { result in
+        originRequest = perform(on: switchOrigin, { service, _ in try service.selectedTerminalTTY(in: terminalID) }) { result in
             guard generation == self.originGeneration else { return }
             self.originRequest = nil; completion(result)
         }
     }
 
-    func loadSwitchContext(enabledProviders: [Provider], completion: @escaping (Result<TerminalSwitchContext, Error>) -> Void) {
+    func loadSwitchContext(enabledProviders: [Provider], originTerminalID: String? = nil, completion: @escaping (Result<TerminalSwitchContext, Error>) -> Void) {
         switchGeneration += 1
         let generation = switchGeneration
         let stale = Date().timeIntervalSince(metadataUpdated) > 10
         switchRequest?.cancel()
-        switchRequest = readSwitchContext(enabledProviders: enabledProviders) { result in
+        switchRequest = readSwitchContext(enabledProviders: enabledProviders, originTerminalID: originTerminalID) { result in
             guard generation == self.switchGeneration else { return }
             self.switchRequest = nil
             if stale, let context = try? result.get(), context.targets.isEmpty {
@@ -107,7 +107,7 @@ final class Engine {
                 // Retry once after metadata rather than reporting a false empty list.
                 self.loadHistory { _ in
                     guard generation == self.switchGeneration else { return }
-                    self.switchRequest = self.readSwitchContext(enabledProviders: enabledProviders) { result in
+                    self.switchRequest = self.readSwitchContext(enabledProviders: enabledProviders, originTerminalID: originTerminalID) { result in
                         guard generation == self.switchGeneration else { return }
                         self.switchRequest = nil; completion(result)
                     }
@@ -119,12 +119,12 @@ final class Engine {
         if stale, historyCompletions.isEmpty { loadHistory { _ in } }
     }
 
-    private func readSwitchContext(enabledProviders: [Provider], completion: @escaping (Result<TerminalSwitchContext, Error>) -> Void) -> DispatchWorkItem {
+    private func readSwitchContext(enabledProviders: [Provider], originTerminalID: String?, completion: @escaping (Result<TerminalSwitchContext, Error>) -> Void) -> DispatchWorkItem {
         let sessions = switchSessions.filter { enabledProviders.contains($0.provider) }
         let socketPath = switchSocketPath
         return perform(on: switching, { service, _ in
             try service.terminalSwitchContext(sessions: sessions,
-                includeUnconfirmedCodex: enabledProviders.contains(.codex), codexSocketPath: socketPath)
+                includeUnconfirmedCodex: enabledProviders.contains(.codex), codexSocketPath: socketPath, originTerminalID: originTerminalID)
         }, completion: completion)
     }
 

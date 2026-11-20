@@ -2,11 +2,11 @@ import AppKit
 import CCSCore
 
 extension SessionActivity {
-    var tint: NSColor {
+    func tint(unattended: Bool) -> NSColor {
         switch self {
         case .attention: return .systemPurple
         case .busy: return .systemYellow
-        case .ready: return .systemGreen
+        case .ready: return unattended ? .systemPurple : .systemGreen
         case .unknown: return .secondaryLabelColor
         }
     }
@@ -25,12 +25,21 @@ final class PickerRow: NSTableRowView {
 }
 
 final class SessionCell: NSTableCellView {
-    init(session s: Session, recent: Bool, terminalOpen: Bool? = nil) {
+    init(session s: Session, recent: Bool, terminalOpen: Bool? = nil, unattended: Bool = false) {
         super.init(frame: .zero)
         let confirmed = terminalOpen == true
-        let status = confirmed ? s.status : terminalOpen == false ? "No confirmed Terminal tab" : "Terminal status unavailable"
+        let activity: SessionActivity
+        let status: String
+        if confirmed {
+            // The completion event can arrive before the picker's next history refresh.
+            activity = unattended ? .ready : SessionActivity(status: s.status)
+            status = unattended ? "Finished" : s.status
+        } else {
+            activity = .unknown
+            status = terminalOpen == false ? "No confirmed Terminal tab" : "Terminal status unavailable"
+        }
         let icon = NSImageView(image: NSImage(systemSymbolName: confirmed ? "circle.fill" : terminalOpen == nil && !s.isSaved ? "questionmark.circle" : "circle", accessibilityDescription: status)!)
-        icon.contentTintColor = (confirmed ? SessionActivity(status: s.status) : .unknown).tint
+        icon.contentTintColor = activity.tint(unattended: unattended)
         icon.toolTip = status
         let title = NSTextField(labelWithString: s.displayTitle); title.font = .systemFont(ofSize: 13, weight: .medium); title.lineBreakMode = .byTruncatingTail
         let badge = NSTextField(labelWithString: " \(s.provider.title) ")

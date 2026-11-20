@@ -28,6 +28,7 @@ public struct Settings: Codable, Equatable {
     public var defaultDays = 7
     public var folders = false
     public var newDirectory = "~/ccs-sessions"
+    public var defaultTerminalID: String?
     public var cleanup = true
     public var hotkeyCode: UInt32 = 49 // Space
     public var hotkeyModifiers: UInt32 = 2048 // Carbon optionKey
@@ -44,7 +45,7 @@ public struct Settings: Codable, Equatable {
     private var storedNotificationSound: Bool?
     private var storedNotificationWiggle: Bool?
     private enum CodingKeys: String, CodingKey {
-        case defaultDays, folders, newDirectory, cleanup, hotkeyCode, hotkeyModifiers, hotkeyLabel
+        case defaultTerminalID, defaultDays, folders, newDirectory, cleanup, hotkeyCode, hotkeyModifiers, hotkeyLabel
         case storedNewProvider = "newProvider", storedProviderFilter = "providerFilter"
         case storedEnabledProviders = "enabledProviders"
         case storedTerminalPopups = "terminalPopups"

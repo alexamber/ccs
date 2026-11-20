@@ -4,7 +4,7 @@ public struct TerminalSwitchTarget {
     public let session: Session?
     public let tab: TerminalTabSnapshot
     public let processID: Int32?
-    public var key: String { session?.key ?? "terminal:\(tab.tty):\(processID ?? 0)" }
+    public var key: String { session?.key ?? "terminal:\(tab.terminalID):\(tab.paneID):\(processID ?? 0)" }
     public var title: String { session?.terminalTitle ?? "Codex tab" }
     public var subtitle: String {
         session.map { $0.provider.title + " · " + shortPath($0.cwd) }
@@ -28,51 +28,48 @@ public struct TerminalSwitchContext {
 extension SessionService {
     /// Read only the origin for a cached chooser. The chosen target is still
     /// fully validated by focusTerminalTarget before any focus action.
+    public func selectedTerminalTTY(in terminalID: String) throws -> String? {
+        try terminals.adapter(for: terminalID).selectedTTY()
+    }
+
     public func selectedTerminalTTY() throws -> String? {
-        let result = try runner("/usr/bin/osascript", ["-"], Self.selectedTTYScript, 2)
-        guard result.code == 0 else { throw CCSError.message("Couldn’t read the current Terminal tab.") }
-        let tty = result.out.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !tty.isEmpty else { return nil }
-        guard tty.hasPrefix("/dev/tty"), !tty.contains(where: \.isWhitespace) else {
-            throw CCSError.message("Terminal returned an invalid tab identifier.")
+        try selectedTerminalTTY(in: AppleTerminalAdapter.id)
+    }
+
+    public static let selectedTTYScript = AppleTerminalAdapter.selectedTTYScript
+
+    public func terminalSwitchContext(sessions: [Session], includeUnconfirmedCodex: Bool = true, codexSocketPath: String? = nil,
+                                      originTerminalID: String? = nil) throws -> TerminalSwitchContext {
+        try terminalSwitchContext(sessions: sessions, includeUnconfirmedCodex: includeUnconfirmedCodex, onlyTab: nil,
+                                  codexSocketPath: codexSocketPath, originTerminalID: originTerminalID)
+    }
+
+    private func terminalSwitchContext(sessions: [Session], includeUnconfirmedCodex: Bool, onlyTab: TerminalTabSnapshot?,
+                                       codexSocketPath: String? = nil, originTerminalID: String? = nil) throws -> TerminalSwitchContext {
+        let adapters: [any TerminalAdapter]
+        if let onlyTab {
+            adapters = [try terminals.adapter(for: onlyTab.terminalID)]
+        } else {
+            adapters = terminals.installed
         }
-        return tty
-    }
-
-    public static let selectedTTYScript = """
-    if application "Terminal" is not running then return ""
-    tell application "Terminal"
-      if (count of windows) is 0 then return ""
-      return tty of selected tab of front window
-    end tell
-    """
-
-    public func terminalSwitchContext(sessions: [Session], includeUnconfirmedCodex: Bool = true, codexSocketPath: String? = nil) throws -> TerminalSwitchContext {
-        try terminalSwitchContext(sessions: sessions, includeUnconfirmedCodex: includeUnconfirmedCodex, onlyTTY: nil, codexSocketPath: codexSocketPath)
-    }
-
-    private func terminalSwitchContext(sessions: [Session], includeUnconfirmedCodex: Bool, onlyTTY: String?, codexSocketPath: String? = nil) throws -> TerminalSwitchContext {
-        let result = try runner("/usr/bin/osascript", ["-"], Self.switchTabsScript, 3)
-        guard result.code == 0 else { throw CCSError.message("Couldn’t read Terminal tabs. Check CCS’s Terminal Automation permission.") }
-        let parts = result.out.components(separatedBy: "\u{1e}")
-        let currentTTY = parts.first ?? ""
+        var tabs = [TerminalTabSnapshot](), currentTTY: String?
+        for adapter in adapters {
+            let inventory = try adapter.tabs()
+            tabs += inventory.tabs
+            if adapter.bundleID == originTerminalID || (originTerminalID == nil && adapters.count == 1) {
+                currentTTY = inventory.selectedTTY
+            }
+        }
         let live = sessions.filter(\.isLive)
-        guard parts.count > 1 || result.out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw CCSError.message("Terminal returned an incomplete tab list. Refresh and try again.")
-        }
-        guard parts.count > 1, !live.isEmpty || includeUnconfirmedCodex else {
+        guard !tabs.isEmpty, !live.isEmpty || includeUnconfirmedCodex else {
             return TerminalSwitchContext(targets: [], currentKey: nil)
         }
         let processes = try runner("/bin/ps", ["-axo", "pid=,ppid=,tty=,command="], nil, 5)
         guard processes.code == 0 else { throw CCSError.message("Couldn’t inspect running Terminal sessions.") }
         var targets = [TerminalSwitchTarget](), seen = Set<String>()
         var currentKey: String?, keysByTTY = [String: String]()
-        for record in parts.dropFirst() {
-            let fields = record.components(separatedBy: "\u{1f}")
-            guard fields.count == 6, let tab = TerminalTabSnapshot(output: fields.joined(separator: "\n")) else {
-                throw CCSError.message("Terminal returned an unreadable tab. Refresh and try again.")
-            }
-            guard onlyTTY == nil || tab.tty == onlyTTY else { continue }
+        for tab in tabs {
+            if let onlyTab, tab.paneID != onlyTab.paneID || tab.tty != onlyTab.tty { continue }
             let session = terminalSession(tty: tab.tty, title: tab.title, sessions: live, processList: processes.out, codexSocketPath: codexSocketPath)
             let process = CodexProvider.terminalProcess(tty: String(tab.tty.dropFirst(5)), processList: processes.out, arguments: processArguments)
             guard session != nil || (includeUnconfirmedCodex && process != nil) else { continue }
@@ -112,34 +109,15 @@ extension SessionService {
             guard target.processID != nil else { throw CCSError.message("That Terminal tab could not be verified.") }
             candidates = []
         }
-        let context = try terminalSwitchContext(sessions: candidates, includeUnconfirmedCodex: target.session == nil, onlyTTY: target.tab.tty)
+        let context = try terminalSwitchContext(sessions: candidates, includeUnconfirmedCodex: target.session == nil, onlyTab: target.tab)
         guard let verified = context.targets.first(where: {
             $0.tab.tty == target.tab.tty && $0.key == target.key &&
                 (target.processID == nil || $0.processID == target.processID)
         }) else {
             throw CCSError.message("That Terminal tab changed or is no longer available. Open the switcher again.")
         }
-        let result = try runner("/usr/bin/osascript", ["-", verified.session?.terminalTitle ?? "", target.tab.tty], Self.focusScript, 5)
-        guard result.code == 0, result.out.trimmingCharacters(in: .whitespacesAndNewlines) == "ok" else {
-            throw CCSError.message("Couldn’t focus that Terminal tab.")
-        }
+        try terminals.focus(verified.tab, title: verified.session?.terminalTitle ?? "")
     }
 
-    public static let switchTabsScript = """
-    if application "Terminal" is not running then return ""
-    set fs to ASCII character 31
-    set rs to ASCII character 30
-    tell application "Terminal"
-      set output to ""
-      if (count of windows) is 0 then return ""
-      set output to tty of selected tab of front window
-      repeat with w in windows
-        set edges to bounds of w
-        repeat with t in tabs of w
-          set output to output & rs & tty of t & fs & (item 1 of edges as text) & fs & (item 2 of edges as text) & fs & (item 3 of edges as text) & fs & (item 4 of edges as text) & fs & custom title of t
-        end repeat
-      end repeat
-      return output
-    end tell
-    """
+    public static let switchTabsScript = AppleTerminalAdapter.switchTabsScript
 }

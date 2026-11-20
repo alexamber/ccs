@@ -3,6 +3,7 @@ import Foundation
 public final class SessionService {
     public let index: SessionIndex
     public let runner: CommandRunner
+    public let terminals: TerminalRegistry
     public let codex: CodexProvider
     private let arguments: (Int32) -> [String]?
     private var terminalSnapshot: (sessions: [Session], providers: [Provider], date: Date)?
@@ -13,7 +14,8 @@ public final class SessionService {
     public private(set) var issues = [Provider: String]()
     public private(set) var historyFailures = Set<Provider>()
     public init(index: SessionIndex = SessionIndex(), runner: @escaping CommandRunner = ProcessRunner().command,
-                codex: CodexProvider = CodexProvider(), arguments: @escaping (Int32) -> [String]? = ProcessArguments.read) {
+                codex: CodexProvider = CodexProvider(), terminals: TerminalRegistry? = nil, arguments: @escaping (Int32) -> [String]? = ProcessArguments.read) {
+        self.terminals = terminals ?? TerminalRegistry.system(runner: runner)
         self.index = index; self.runner = runner; self.codex = codex; self.arguments = arguments
     }
 
@@ -97,13 +99,9 @@ public final class SessionService {
         }
         if let live = running[s.id] {
             let ttys = (try? candidateTTYs(s, live: live)) ?? []
-            if !ttys.isEmpty {
-                let result = try runner("/usr/bin/osascript", ["-", s.terminalTitle] + ttys.map { "/dev/" + $0 }, Self.focusScript, 15)
-                if result.out.trimmingCharacters(in: .whitespacesAndNewlines) == "ok" { return }
-                if result.code != 0 { throw CCSError.message(result.err.nonempty ?? "Terminal automation failed. Allow CCS in System Settings → Privacy & Security → Automation.") }
-            }
+            if !ttys.isEmpty, try terminals.focusViewer(ttys: ttys.map { "/dev/" + $0 }, title: s.terminalTitle) { return }
             if live.kind == "interactive" {
-                throw CCSError.message("Window not found in Terminal.app (it may run in another terminal app).")
+                throw CCSError.message("Couldn’t find the session in a supported terminal.")
             }
             try openTerminal("claude attach \(shellQuote(live.name?.nonempty ?? s.id))", title: s.terminalTitle)
         } else { try openTerminal("cd \(shellQuote(s.cwd)) && claude --resume \(shellQuote(s.id))", title: s.terminalTitle) }
@@ -126,10 +124,7 @@ public final class SessionService {
                 }
                 throw CCSError.message("Couldn’t identify this conversation’s Terminal tab. Use Option-Tab to select an open Codex tab. No additional tab was opened.")
             }
-            let focus = try runner("/usr/bin/osascript", ["-", current.terminalTitle, target.tab.tty], Self.focusScript, 5)
-            guard focus.code == 0, focus.out.trimmingCharacters(in: .whitespacesAndNewlines) == "ok" else {
-                throw CCSError.message("Couldn’t focus that Terminal tab. Refresh and try again.")
-            }
+            try terminals.focus(target.tab, title: current.terminalTitle)
             return
         }
         guard current.isSaved else {
@@ -138,11 +133,8 @@ public final class SessionService {
         try openTerminal(codex.resumeCommand(current), title: current.terminalTitle)
     }
 
-    public func openTerminal(_ command: String, title: String = "") throws {
-        let result = try runner("/usr/bin/osascript", ["-", cleanText(title), command], Self.launchScript, 15)
-        if result.code != 0 {
-            throw CCSError.message(result.err.trimmingCharacters(in: .whitespacesAndNewlines).nonempty ?? "Could not open Terminal.app. Allow CCS in System Settings → Privacy & Security → Automation.")
-        }
+    public func openTerminal(_ command: String, title: String = "", preferred: String? = Settings.load().defaultTerminalID) throws {
+        try terminals.launch(command: command, title: cleanText(title), preferred: preferred)
     }
     public func candidateTTYs(_ s: Session, live: LiveSession) throws -> [String] {
         let result = try runner("/bin/ps", ["-axo", "pid=,ppid=,tty=,command="], nil, 5)
@@ -171,55 +163,9 @@ public final class SessionService {
         var unique = Set<String>()
         return viewers.filter { !$0.isEmpty && $0 != "??" && unique.insert($0).inserted }
     }
-    // Keep cosmetic errors inside this handler: a successful focus or launch
-    // must never become a failed action (or trigger a duplicate launch).
-    static let titleScript = """
-    on nameTab(targetTab, newTitle)
-      try
-        if newTitle is "" then return
-        tell application "Terminal"
-          considering case, diacriticals
-            if custom title of targetTab is not newTitle then set custom title of targetTab to newTitle
-          end considering
-        end tell
-      end try
-    end nameTab
-    """
-    public static let launchScript = """
-    on run argv
-      tell application "Terminal"
-        set openedTab to do script (item 2 of argv)
-        my nameTab(openedTab, item 1 of argv)
-        activate
-      end tell
-    end run
-    """ + "\n" + titleScript
-    public static let focusScript = """
-    on run argv
-      tell application "Terminal"
-        repeat with candidate in items 2 thru -1 of argv
-          set wanted to contents of candidate
-          repeat with w in windows
-            try
-              set wtabs to tabs of w
-            on error
-              set wtabs to {}
-            end try
-            repeat with t in wtabs
-              if tty of t is wanted then
-                set selected of t to true
-                set index of w to 1
-                my nameTab(t, item 1 of argv)
-                activate
-                return "ok"
-              end if
-            end repeat
-          end repeat
-        end repeat
-      end tell
-      return "missing"
-    end run
-    """ + "\n" + titleScript
+    static let titleScript = AppleTerminalAdapter.titleScript
+    public static let launchScript = AppleTerminalAdapter.launchScript
+    public static let focusScript = AppleTerminalAdapter.focusScript
 }
 
 // Enough shell tokenization to compare the first attach argument exactly,

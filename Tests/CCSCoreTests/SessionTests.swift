@@ -84,10 +84,14 @@ final class SessionTests: XCTestCase {
         let service = SessionService(runner: { path, _, input, _ in
             if path == "/usr/bin/env" { return CommandResult(out: liveJSON) }
             if path == "/bin/ps" { return CommandResult(out: list) }
-            scripts.append(input ?? ""); return CommandResult(out: "ok\n")
+            scripts.append(input ?? "")
+            if input == SessionService.switchTabsScript {
+                return CommandResult(out: "\u{1e}/dev/ttys010\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}Topic")
+            }
+            return CommandResult(out: "ok\n")
         })
         try service.activate(s)
-        XCTAssertEqual(scripts, [SessionService.focusScript])
+        XCTAssertEqual(scripts, [SessionService.switchTabsScript, SessionService.focusScript])
     }
     func testFolderNumbersSurviveCleanupAndConcurrentCreation() throws {
         let root = try temporary()

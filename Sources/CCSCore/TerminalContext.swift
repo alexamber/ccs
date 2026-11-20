@@ -3,41 +3,21 @@ import CoreGraphics
 
 /// Terminal's bounds use global screen coordinates with the origin at the top left.
 public struct TerminalTabSnapshot: Equatable {
+    public let terminalID: String
+    public let paneID: String
     public let tty: String
     public let bounds: CGRect
     public let title: String
     /// Ignore the provider's activity spinner when detecting a topic change.
     public var matchingTitle: String { CodexProvider.normalizedTerminalTitle(title) }
 
-    public init?(output: String) {
-        let lines = output.split(maxSplits: 5, whereSeparator: \.isNewline).map(String.init)
-        guard lines.count >= 5, lines[0].hasPrefix("/dev/tty") else { return nil }
-        let edges = lines[1...4].compactMap(Double.init)
-        guard edges.count == 4, edges.allSatisfy(\.isFinite),
-              edges[2] > edges[0], edges[3] > edges[1] else { return nil }
-        tty = lines[0]
-        title = lines.count == 6 ? cleanText(lines[5]) : ""
-        bounds = CGRect(x: edges[0], y: edges[1], width: edges[2] - edges[0], height: edges[3] - edges[1])
+    public init(terminalID: String, paneID: String, tty: String, bounds: CGRect, title: String) {
+        self.terminalID = terminalID
+        self.paneID = paneID
+        self.tty = tty
+        self.bounds = bounds
+        self.title = title
     }
-
-    public static func read(runner: CommandRunner = ProcessRunner().command) -> TerminalTabSnapshot? {
-        guard let result = try? runner("/usr/bin/osascript", ["-"], script, 2), result.code == 0 else { return nil }
-        return TerminalTabSnapshot(output: result.out)
-    }
-
-    // Never launch or activate Terminal. An app switch between the native
-    // frontmost check and this Apple event must not produce a popup.
-    public static let script = """
-    if application "Terminal" is not running then return ""
-    tell application "Terminal"
-      if not frontmost then return ""
-      if (count of windows) is 0 then return ""
-      set w to front window
-      set device to tty of selected tab of w
-      set edges to bounds of w
-      return device & linefeed & (item 1 of edges as text) & linefeed & (item 2 of edges as text) & linefeed & (item 3 of edges as text) & linefeed & (item 4 of edges as text) & linefeed & (custom title of selected tab of w)
-    end tell
-    """
 }
 
 extension SessionService {

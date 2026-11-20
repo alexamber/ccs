@@ -10,6 +10,9 @@ final class TerminalContextTests: XCTestCase {
         let service = SessionService(runner: { path, args, script, _ in
             if path == "/usr/bin/env" { return CommandResult(out: live ? "[{\"sessionId\":\"abc\",\"pid\":123,\"kind\":\"interactive\"}]" : "[]") }
             if path == "/bin/ps" { return CommandResult(out: "123 1 ttys001 claude") }
+            if script == SessionService.switchTabsScript {
+                return CommandResult(out: "\u{1e}/dev/ttys001\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}Topic")
+            }
             calls.append((args, script ?? "")); return CommandResult(out: "ok")
         })
         let session = Session(id: "abc", cwd: "/tmp/folder", title: title)

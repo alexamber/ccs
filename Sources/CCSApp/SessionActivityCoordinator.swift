@@ -29,6 +29,7 @@ final class SessionActivityCoordinator {
     init(load: @escaping Load, remember: @escaping (Session) -> Void = { _ in }, now: @escaping () -> Date = Date.init) {
         self.load = load; self.remember = remember; self.now = now
         notices = SessionNotificationQueue(now: now)
+        notices.hasUnattendedCompletion = { [weak self] in self?.tracker.finished.contains($0) == true }
         notices.canPresent = { [weak self] in self?.canPresent() == true }
         notices.onShow = { [weak self] in self?.onShow?($0) }
         notices.onHide = { [weak self] in self?.onHide?() }
@@ -65,11 +66,13 @@ final class SessionActivityCoordinator {
     func tick() { notices.tick() }
 
     private func receive(_ snapshot: TerminalActivitySnapshot) {
-        let updates = tracker.update(snapshot).filter {
+        let updates = tracker.update(snapshot)
+        for update in updates where update.kind == .finished { notices.completionArrived(for: update.key) }
+        let alerts = updates.filter {
             settings.terminalPopups && ($0.kind == .attention ? settings.notifyAttention : settings.notifyCompletion)
         }
         notices.reconcile(snapshot, attention: settings.notifyAttention, completion: settings.notifyCompletion)
-        notices.enqueue(updates)
+        notices.enqueue(alerts)
         onSnapshot?(snapshot, tracker.finished)
     }
     private func updatePresentation() {

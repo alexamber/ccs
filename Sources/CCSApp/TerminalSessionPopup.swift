@@ -8,6 +8,7 @@ final class TerminalSessionMonitor {
     enum Dismissal { case inactive, disabled, tabChanged, spaceChanged }
     typealias ReadTab = (@escaping (TerminalTabSnapshot?) -> Void) -> Void
     typealias LoadSession = (TerminalTabSnapshot, @escaping (Session?) -> Void) -> Void
+    private let isCurrentTerminal: (String) -> Bool
     private let frontmost: () -> Bool
     private let now: () -> Date
     private let readTab: ReadTab
@@ -22,11 +23,11 @@ final class TerminalSessionMonitor {
     private var retryAfter: Date?
     var onFocus: ((String?) -> Void)?
 
-    init(frontmost: @escaping () -> Bool = { NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Terminal" },
+    init(frontmost: @escaping () -> Bool, isCurrentTerminal: @escaping (String) -> Bool = { _ in true },
          now: @escaping () -> Date = Date.init,
          readTab: @escaping ReadTab, loadSession: @escaping LoadSession,
          show: @escaping (Session, TerminalTabSnapshot) -> Void, hide: @escaping (Dismissal) -> Void) {
-        self.frontmost = frontmost; self.now = now; self.readTab = readTab; self.loadSession = loadSession
+        self.isCurrentTerminal = isCurrentTerminal; self.frontmost = frontmost; self.now = now; self.readTab = readTab; self.loadSession = loadSession
         self.show = show; self.hide = hide
         observer = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
                                                                      object: nil, queue: .main) { [weak self] _ in self?.updateActivity() }
@@ -73,7 +74,7 @@ final class TerminalSessionMonitor {
             guard let self else { return }
             self.reading = false
             guard self.enabled, self.frontmost(), request == self.revision else { return }
-            guard let snapshot else {
+            guard let snapshot, self.isCurrentTerminal(snapshot.terminalID) else {
                 self.onFocus?(nil)
                 // An Apple event can fail during activation/Space transitions.
                 // Hide stale content, but do not turn recovery into a new topic.
@@ -84,7 +85,9 @@ final class TerminalSessionMonitor {
                 return
             }
             let returning = self.current == nil
-            let changed = self.lastObserved?.tty != snapshot.tty || self.lastObserved?.matchingTitle != snapshot.matchingTitle
+            let changed = self.lastObserved?.terminalID != snapshot.terminalID ||
+                self.lastObserved?.paneID != snapshot.paneID || self.lastObserved?.tty != snapshot.tty ||
+                self.lastObserved?.matchingTitle != snapshot.matchingTitle
             self.current = snapshot; self.lastObserved = snapshot
             self.onFocus?(changed || returning || self.resolving ? nil : self.lastSessionKey)
             guard changed || returning || self.retryAfter.map({ self.now() >= $0 }) == true else { return }
@@ -103,7 +106,7 @@ final class TerminalSessionMonitor {
         loadSession(current) { [weak self] session in
             guard let self else { return }
             self.resolving = false
-            if self.enabled, self.frontmost(), request == self.revision, let snapshot = self.current {
+            if self.enabled, self.frontmost(), request == self.revision, let snapshot = self.current, self.isCurrentTerminal(snapshot.terminalID) {
                 if let session {
                     self.lastSessionKey = session.key
                     self.onFocus?(session.key)

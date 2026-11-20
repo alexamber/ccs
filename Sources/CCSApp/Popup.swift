@@ -25,6 +25,14 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     private var reloading = false
     private var wantsFileFocus = false
     private var hasLoaded = false
+    private var finishedKeys = Set<String>()
+    func updateFinished(_ keys: Set<String>) {
+        let changed = finishedKeys.symmetricDifference(keys)
+        finishedKeys = keys
+        guard panel.isVisible, !changed.isEmpty else { return }
+        let affected = IndexSet(rows.indices.filter { rows[$0].session.map { changed.contains($0.key) } == true })
+        table.reloadData(forRowIndexes: affected, columnIndexes: IndexSet(integer: 0))
+    }
     private var terminalKeys: Set<String>?
     private var refreshError: String?
     private let loadHistory: (@escaping (Result<HistorySnapshot, Error>) -> Void) -> Void
@@ -442,7 +450,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { rows[row].session == nil ? 26 : 48 }
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { PickerRow() }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        if let s = rows[row].session { return SessionCell(session: s, recent: recent, terminalOpen: terminalKeys.map { $0.contains(s.key) }) }
+        if let s = rows[row].session { return SessionCell(session: s, recent: recent, terminalOpen: terminalKeys.map { $0.contains(s.key) }, unattended: finishedKeys.contains(s.key)) }
         let label = NSTextField(labelWithString: rows[row].label); label.font = .systemFont(ofSize: 11, weight: .semibold); label.textColor = .secondaryLabelColor; label.lineBreakMode = .byTruncatingMiddle
         return label
     }

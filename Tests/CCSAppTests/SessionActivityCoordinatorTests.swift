@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 import CCSCore
 @testable import CCSApp
@@ -124,6 +125,29 @@ final class SessionActivityCoordinatorTests: XCTestCase {
         preferences.notifyAttention = true; preferences.notifyCompletion = true
         activity.configure(preferences); activity.ingest(target("waiting_input").session!)
         XCTAssertEqual(shown.count, beforeMute, "Unchanged attention should not replay on unmute")
+    }
+
+    func testMutedCompletionStaysPurpleUntilViewedForOneSecond() throws {
+        var clock = Date(), reply: ((SessionUpdateMonitor.ResultType) -> Void)?
+        let activity = SessionActivityCoordinator(load: { _, done in reply = done }, now: { clock })
+        defer { activity.stop() }
+        var preferences = settings(); preferences.notifyCompletion = false
+        activity.configure(preferences)
+        reply?(.success(snapshot(target("active"))))
+        let session = try XCTUnwrap(target("idle", turn: "new").session)
+        activity.onShow = { _ in XCTFail("Completion alerts are muted") }
+        activity.ingest(session)
+        func indicator() throws -> NSColor? {
+            let cell = SessionCell(session: session, recent: false, terminalOpen: true,
+                                   unattended: activity.finished.contains(session.key))
+            return try XCTUnwrap(cell.subviews.compactMap { $0 as? NSImageView }.first).contentTintColor
+        }
+        XCTAssertEqual(try indicator(), .systemPurple)
+        activity.observe(session.key)
+        clock += 0.5; activity.tick(); activity.observe(nil)
+        XCTAssertEqual(try indicator(), .systemPurple)
+        activity.observe(session.key); clock += 1; activity.tick()
+        XCTAssertEqual(try indicator(), .systemGreen)
     }
 
     func testProviderChangeAndStopRejectInFlightSnapshotsAndDisabledProviderEvents() {
