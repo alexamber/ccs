@@ -98,12 +98,12 @@ public final class CodexProvider {
     }
     /// Only loaded threads. The latest turn's status catches short tasks between
     /// samples; itemsView:notLoaded excludes messages and tool payloads.
-    func loadedSessions() throws -> [Session] {
+    func loadedSessions(includeTurns: Bool = true) throws -> [Session] {
         guard enabled, hasSavedData || connector != nil else { return [] }
-        do { return try readLoadedSessions() }
+        do { return try readLoadedSessions(includeTurns: includeTurns) }
         catch { invalidate(); throw error }
     }
-    private func readLoadedSessions() throws -> [Session] {
+    private func readLoadedSessions(includeTurns: Bool) throws -> [Session] {
         let client = try client(allowMetadata: false)
         guard client.isShared else { throw CCSError.message("Codex live status unavailable.") }
         var ids = Set<String>(), cursor: String?, cursors = Set<String>()
@@ -122,6 +122,7 @@ public final class CodexProvider {
         let sessions = try ids.sorted().map { id in
             guard Date() < deadline else { throw CCSError.message("Codex live status timed out.") }
             var session = try current(id)
+            guard includeTurns else { return session }
             do {
                 let result = try client.request("thread/turns/list", ["threadId": id, "limit": 1,
                     "sortDirection": "desc", "itemsView": "notLoaded"])

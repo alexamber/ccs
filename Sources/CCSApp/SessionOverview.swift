@@ -43,6 +43,16 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
     private let refreshButton = NSButton()
     private var allTargets = [TerminalSwitchTarget](), targets = [TerminalSwitchTarget](), available = Set<String>(), finished = Set<String>()
     private var pending: TerminalActivitySnapshot?
+    private enum SwitchOrigin {
+        case pending, tty(String?), selection(String?)
+    }
+    private var keysByTTY: [String: String]?
+    private var origin: SwitchOrigin = .pending
+    private var pendingSteps: Int?
+    private var releaseTimer: Timer?
+    private var previousApplication: NSRunningApplication?
+    var isSwitching: Bool { releaseTimer != nil }
+    var highlighted: TerminalSwitchTarget? { targets.indices.contains(table.selectedRow) ? targets[table.selectedRow] : nil }
     private var interacted = false
     private var statusText = ""
     private var maximumListHeight: CGFloat = 408
@@ -99,6 +109,7 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
         for view in [heading, search, message, scroll, footer] { view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
     }
     @discardableResult func show(anchor: NSView, cached: TerminalActivitySnapshot? = nil, finished: Set<String> = []) -> Int {
+        endSwitch(); keysByTTY = cached.flatMap { $0.context.targets.isEmpty ? nil : $0.context.keysByTTY }
         generation += 1; interacted = false; pending = nil; allTargets = []; targets = []; available = []; self.finished = finished
         search.stringValue = ""
         maximumListHeight = min(408, max(102, (anchor.window?.screen?.visibleFrame.height ?? 700) - 210))
@@ -117,6 +128,7 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
     func supply(_ snapshot: TerminalActivitySnapshot, finished: Set<String>, generation: Int) {
         guard isShown, self.generation == generation else { return }
         self.finished = finished
+        keysByTTY = snapshot.context.keysByTTY
         let fresh = SessionActivity.sorted(snapshot.context.targets)
         if interacted, !allTargets.isEmpty {
             let byKey = Dictionary(fresh.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
@@ -134,6 +146,7 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
         }
         updateMessage()
         refreshButton.contentTintColor = pending == nil ? .secondaryLabelColor : .controlAccentColor
+        resolveSwitch()
     }
     private func replaceList(_ snapshot: TerminalActivitySnapshot) {
         allTargets = SessionActivity.sorted(snapshot.context.targets)
@@ -150,9 +163,10 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
             return terms.allSatisfy { text.localizedStandardContains($0) }
         }
         table.reloadData()
-        if let row = keep.flatMap({ key in targets.firstIndex { $0.key == key } }) ?? targets.firstIndex(where: { available.contains($0.key) }) {
+        let fallback = isSwitching ? nil : targets.firstIndex(where: { available.contains($0.key) })
+        if let row = keep.flatMap({ key in targets.firstIndex { $0.key == key } }) ?? fallback {
             table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        }
+        } else { table.deselectAll(nil) }
         resize(); updateMessage()
     }
     private func updateMessage() {
@@ -167,18 +181,87 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
         if selector == #selector(NSResponder.cancelOperation(_:)) { cancelSearchOrClose(); return true }
         return false
     }
-    private func cancelSearchOrClose() {
+    func cancelSearchOrClose() {
+        if isSwitching {
+            let previous = previousApplication
+            close()
+            if previous?.processIdentifier != ProcessInfo.processInfo.processIdentifier { previous?.activate(options: []) }
+            return
+        }
         if search.stringValue.isEmpty { close() }
         else { search.stringValue = ""; applyFilter(); popover.contentViewController?.view.window?.makeFirstResponder(search) }
     }
     func fail(_ error: Error, generation: Int) {
         guard isShown, self.generation == generation else { return }
+        if keysByTTY == nil { endSwitch() }
         statusText = allTargets.isEmpty ? "Couldn’t load sessions. Try refresh." : "Couldn’t refresh · showing recent sessions"
         updateMessage()
         message.toolTip = error.localizedDescription
     }
-    func close() { generation += 1; popover.performClose(nil); onClose?() }
-    func popoverDidClose(_ notification: Notification) { generation += 1; onClose?() }
+    func close() { endSwitch(); popover.performClose(nil) }
+    func popoverDidClose(_ notification: Notification) { endSwitch(); generation += 1; onClose?() }
+
+    func beginSwitch(step: Int, fromSelection: Bool = false, previous: NSRunningApplication? = nil,
+                     optionHeld: @escaping () -> Bool = { NSEvent.modifierFlags.contains(.option) }) {
+        guard isShown, !isSwitching else { return }
+        previousApplication = previous
+        origin = fromSelection ? .selection(highlighted?.key) : .pending
+        pendingSteps = step
+        noteInteraction()
+        table.deselectAll(nil)
+        popover.contentViewController?.view.window?.makeFirstResponder(table)
+        let timer = Timer(timeInterval: 0.025, repeats: true) { [weak self] _ in
+            guard let self, !optionHeld(), self.pendingSteps == nil else { return }
+            self.commitSwitch()
+        }
+        releaseTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+        resolveSwitch()
+    }
+
+    func supplyOrigin(tty: String?, generation: Int) {
+        guard isShown, self.generation == generation, isSwitching, case .pending = origin else { return }
+        origin = .tty(tty)
+        resolveSwitch()
+    }
+
+    private func resolveSwitch() {
+        guard let steps = pendingSteps, let keysByTTY else { return }
+        let key: String?
+        switch origin {
+        case .pending: return
+        case .tty(let tty): key = tty.flatMap { keysByTTY[$0] }
+        case .selection(let selected): key = selected
+        }
+        pendingSteps = nil
+        selectRelative(to: key, step: steps)
+    }
+
+    func cycle(_ step: Int) {
+        if let steps = pendingSteps { pendingSteps = steps + step }
+        else { selectRelative(to: highlighted?.key, step: step) }
+    }
+
+    private func selectRelative(to key: String?, step: Int) {
+        let rows = targets.indices.filter { available.contains(targets[$0].key) }
+        guard !rows.isEmpty else { return }
+        let start = rows.firstIndex { targets[$0].key == key } ?? (step > 0 ? -1 : 0)
+        let row = rows[((start + step) % rows.count + rows.count) % rows.count]
+        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        table.scrollRowToVisible(row)
+    }
+
+    func commitSwitch() {
+        guard isShown, isSwitching, pendingSteps == nil else { return }
+        guard let highlighted, available.contains(highlighted.key) else { close(); return }
+        openSelected()
+    }
+
+    func endSwitch() {
+        releaseTimer?.invalidate(); releaseTimer = nil
+        previousApplication = nil; pendingSteps = nil; origin = .pending
+    }
+    deinit { releaseTimer?.invalidate() }
     private func resize() {
         listHeight.constant = min(CGFloat(targets.count * 34), maximumListHeight)
         popover.contentSize = NSSize(width: 400, height: 114 + listHeight.constant)

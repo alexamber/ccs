@@ -110,6 +110,11 @@ Claude/Codex versions and build number. Avoid testing with unsaved work at risk.
    Pass: selection stays stable during a gesture, release focuses the highlighted
    conversation, and cancelled/older requests never cause a delayed switch.
    Close a test session while the chooser is open: it must not restart that session.
+   From Finder, use both the picker and a notification to switch to windows on
+   another desktop and to minimized windows. Confirm Terminal becomes active
+   and the requested window and tab are visible. If either build reports an
+   error, observe for two more seconds to distinguish a late transition from
+   a failed switch.
 5. **Spaces, displays, and dragging.** With Show on every desktop enabled, swipe to
    a desktop without Terminal and back. Repeat with a full-screen app and an
    external display if available. Pass: the compact icon follows, but does not
@@ -126,6 +131,9 @@ Claude/Codex versions and build number. Avoid testing with unsaved work at risk.
    show an explanation without discovery-triggered permission prompts; a project
    report appears, filters, opens, and reflects edits within the refresh interval.
    Selecting sessions quickly must never show another folder's late results.
+   Filter to two sessions with different folders and traverse them. Each sidebar
+   should show that folder’s files even when their names differ from the query.
+   Select **Search files across sessions** to search filenames with the same query.
    Also search for a file whose conversation title does not match, including an
    older session outside the selected date range. Pass: global files respect the
    provider filter, show their folders, and open with Return/Right/Down as appropriate.

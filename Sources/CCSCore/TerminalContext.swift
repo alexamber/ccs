@@ -4,6 +4,7 @@ import CoreGraphics
 /// Terminal's bounds use global screen coordinates with the origin at the top left.
 public struct TerminalTabSnapshot: Equatable {
     public let terminalID: String
+    public let windowID: Int32?
     public let paneID: String
     public let tty: String
     public let bounds: CGRect
@@ -11,7 +12,8 @@ public struct TerminalTabSnapshot: Equatable {
     /// Ignore the provider's activity spinner when detecting a topic change.
     public var matchingTitle: String { CodexProvider.normalizedTerminalTitle(title) }
 
-    public init(terminalID: String, paneID: String, tty: String, bounds: CGRect, title: String) {
+    public init(terminalID: String, paneID: String, tty: String, bounds: CGRect, title: String, windowID: Int32? = nil) {
+        self.windowID = windowID
         self.terminalID = terminalID
         self.paneID = paneID
         self.tty = tty
@@ -56,7 +58,7 @@ extension SessionService {
         }
         for session in sessions where session.provider == .claude {
             guard let live = session.live else { continue }
-            if Self.candidateTTYs(session, live: live, processList: listing, arguments: arguments).contains(device) {
+            if Self.candidateTTYs(session, live: live, processList: listing, viewerTTY: device, arguments: arguments).contains(device) {
                 matches.append(session)
             }
         }

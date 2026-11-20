@@ -120,28 +120,25 @@ after canonicalization; enumeration does not prefetch resource metadata, and
 protected child names are skipped before requesting their properties. A readability
 check alone is not sufficient to prevent macOS folder-access prompts.
 
-Option-Tab and Option-Shift-Tab have distinct Carbon hotkey IDs, dispatched only to
-their owning handler. On each gesture, Terminal tab enumeration is matched against
-the latest completed session metadata. A dedicated user-initiated queue inspects
-Terminal tabs without waiting for history refreshes or other actions. Stale labels
-refresh on the history lane for the next gesture; an empty cold-start result retries
-once after history arrives. Requests share an in-flight history refresh, and new
-gestures cancel queued obsolete tab reads. A compact `SessionSwitcher` appears
-immediately, reusing targets for up to 30 seconds. Cached rows are initially
-unselected. A separate origin queue reads only the selected tty, including aliases
-for deduplicated viewers, and applies all accumulated keys before showing the first
-highlight. With a cached list, the full refresh updates only the next gesture.
-The selected target is still fully revalidated before focus.
-Each presentation has a generation token; old callbacks cannot populate a reopened
-switcher. The fresh current tab determines the initial selection, even with popups off. It does not instantiate
-an artifact browser. The candidate list stays fixed while cycling; a 40 ms modifier check
-runs only while the switcher is visible to detect Option release. Before focus,
-the selected tty/session association is revalidated. One process snapshot is shared
-across tab matching; focus validates only the chosen tty. Claude activation refreshes
-live PIDs instead of trusting the chooser’s cached identities. The action lane initializes
-its own Codex connection with a metadata read before matching confirmed local clients;
-it cannot rely on the history lane's previously discovered socket. This path never invokes resume,
-attach, or launch.
+Option-Tab and Option-Shift-Tab have distinct Carbon hotkey IDs. They navigate
+the same `SessionOverview` popover and activity snapshot as the unicorn’s context
+menu. An on-demand activity refresh also works when the unicorn is disabled.
+Before opening the popover, CCS captures the foreground terminal. A dedicated
+queue reads its selected TTY and the snapshot maps that TTY to a row, including
+alternate viewers of the same conversation. The menu accumulates key presses
+until the origin and rows are ready. A gesture in an open menu starts from its
+highlight and preserves its filter. Dismissal invalidates pending callbacks.
+
+The menu skips unavailable rows and checks for Option release every 25 ms during
+a gesture. On focus, the terminal adapter revalidates the pane and the service
+checks the current process and conversation. Apple Terminal inventories include
+window IDs so a confirmed target can be addressed by window and TTY using Apple
+events. A completed switch requires Terminal to be active, its target window to
+be visible, and its front tab to have the expected TTY. During a Space change
+the adapter can recheck the session identity and raise its window once more.
+A moved tab can be rediscovered in a fresh inventory. The full picker
+also retains confirmed pane references and checks live Codex identities before
+using them. It falls back to its normal activation flow for stale references.
 
 Unconfirmed interactive Codex clients are represented by tty and PID, without
 conversation metadata. Focusing these rows checks that the same recognized process

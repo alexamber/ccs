@@ -4,11 +4,14 @@ import CCSCore
 @testable import CCSApp
 
 final class InteractionTests: XCTestCase {
+    private func target(_ session: Session) -> TerminalSwitchTarget {
+        TerminalSwitchTarget(session: session, tab: TerminalTabSnapshot(output: "/dev/ttys001\n0\n0\n800\n600")!)
+    }
     func testClosedTerminalLosesGreenStatusAndOldLoadedHistoryRespectsDateRange() throws {
         _ = NSApplication.shared
         var session = Session(id: "loaded", cwd: "/tmp", mtime: Date().timeIntervalSince1970, provider: .codex)
         session.status = "idle"
-        var snapshot = HistorySnapshot(sessions: [session], issues: [:], installedProviders: [.codex], terminalKeys: [session.key])
+        var snapshot = HistorySnapshot(sessions: [session], issues: [:], installedProviders: [.codex], terminalTargets: [session.key: target(session)])
         let popup = Popup(engine: Engine(environment: { [:] }), settings: Settings(), loadHistory: { $0(.success(snapshot)) })
         func icon() throws -> NSImageView {
             let cell = try XCTUnwrap(popup.tableView(NSTableView(), viewFor: nil, row: 0))
@@ -17,18 +20,18 @@ final class InteractionTests: XCTestCase {
         popup.refresh()
         XCTAssertEqual(try icon().contentTintColor, .systemGreen)
         var working = session; working.status = "active"
-        snapshot = HistorySnapshot(sessions: [working], issues: [:], installedProviders: [.codex], terminalKeys: [session.key])
+        snapshot = HistorySnapshot(sessions: [working], issues: [:], installedProviders: [.codex], terminalTargets: [session.key: target(session)])
         popup.refresh()
         XCTAssertEqual(try icon().contentTintColor, .systemYellow, "An open working session must not keep its idle green indicator")
-        snapshot.terminalKeys = []
+        snapshot.terminalTargets = [:]
         popup.refresh()
         XCTAssertEqual(try icon().contentTintColor, .secondaryLabelColor)
         XCTAssertEqual(try icon().toolTip, "No confirmed Terminal tab")
-        snapshot.terminalKeys = nil
+        snapshot.terminalTargets = nil
         popup.refresh()
         XCTAssertEqual(try icon().toolTip, "Terminal status unavailable")
         var old = session; old.mtime = 1
-        snapshot = HistorySnapshot(sessions: [old], issues: [:], installedProviders: [.codex], terminalKeys: [])
+        snapshot = HistorySnapshot(sessions: [old], issues: [:], installedProviders: [.codex], terminalTargets: [:])
         popup.refresh()
         XCTAssertNil(popup.selected, "A daemon-loaded conversation must not bypass the date filter")
     }
@@ -125,8 +128,8 @@ final class InteractionTests: XCTestCase {
         wait(for: [started], timeout: 2)
         // Keep the optional label refresh pending on the blocked history queue.
         engine.loadHistory { _ in refreshed.fulfill() }
-        engine.loadSwitchContext(enabledProviders: [.claude, .codex]) { result in
-            let context = try? result.get()
+        engine.loadTerminalActivity(enabledProviders: [.claude, .codex]) { result in
+            let context = try? result.get().context
             XCTAssertEqual(context?.targets.count, 2)
             XCTAssertEqual(context?.targets.first?.title, "Codex tab")
             XCTAssertEqual(context?.targets.last?.session?.id, "claude-session", "The fast lane reuses completed metadata")

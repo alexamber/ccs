@@ -33,7 +33,9 @@ struct AppleTerminalAdapter: TerminalAdapter {
         }
         let tabs = try parts.dropFirst().map { record -> TerminalTabSnapshot in
             let fields = record.components(separatedBy: "\u{1f}")
-            guard fields.count == 6, let tab = TerminalTabSnapshot(output: fields.joined(separator: "\n")) else {
+            let windowID = fields.count == 7 ? Int32(fields[6].trimmingCharacters(in: .whitespacesAndNewlines)) : nil
+            guard fields.count == 6 || windowID != nil,
+                  let tab = TerminalTabSnapshot(output: fields.prefix(6).joined(separator: "\n"), windowID: windowID) else {
                 throw CCSError.message("Terminal returned an unreadable tab. Refresh and try again.")
             }
             return tab
@@ -46,6 +48,32 @@ struct AppleTerminalAdapter: TerminalAdapter {
         guard result.code == 0, result.out.trimmingCharacters(in: .whitespacesAndNewlines) == "ok" else {
             throw CCSError.message("Couldn’t focus that Terminal tab. Refresh and try again.")
         }
+    }
+
+    func focusIfVerified(_ target: TerminalTabSnapshot, verify: (TerminalTabSnapshot) throws -> String?) throws -> Bool {
+        if let window = AppleTerminalWindow(tab: target), let currentTitle = try window.title() {
+            return try focus(window, tab: target, currentTitle: currentTitle, verify: verify)
+        }
+        // Tabs can move between windows. Rediscover by TTY and revalidate.
+        guard let tab = try currentPane(for: target) else { return false }
+        if let window = AppleTerminalWindow(tab: tab) {
+            return try focus(window, tab: tab, currentTitle: tab.title, verify: verify)
+        }
+        guard let title = try verify(tab) else { return false }
+        try focus(paneID: tab.paneID, title: title)
+        return true
+    }
+
+    private func focus(_ window: AppleTerminalWindow, tab: TerminalTabSnapshot, currentTitle: String,
+                       verify: (TerminalTabSnapshot) throws -> String?) throws -> Bool {
+        func verifiedTitle(_ title: String) throws -> String? {
+            try verify(TerminalTabSnapshot(terminalID: bundleID, paneID: tab.paneID, tty: tab.tty,
+                                          bounds: tab.bounds, title: title, windowID: tab.windowID))
+        }
+        guard let newTitle = try verifiedTitle(currentTitle) else { return false }
+        return try window.focus(tty: tab.tty, verifiedTitle: currentTitle, newTitle: newTitle, activate: {
+            try focus(paneID: tab.paneID, title: newTitle)
+        }, revalidate: { title in try verifiedTitle(title) != nil })
     }
 
     func launch(command: String, title: String) throws {
@@ -86,8 +114,9 @@ struct AppleTerminalAdapter: TerminalAdapter {
       set output to tty of selected tab of front window
       repeat with w in windows
         set edges to bounds of w
+        set windowID to id of w
         repeat with t in tabs of w
-          set output to output & rs & tty of t & fs & (item 1 of edges as text) & fs & (item 2 of edges as text) & fs & (item 3 of edges as text) & fs & (item 4 of edges as text) & fs & custom title of t
+          set output to output & rs & tty of t & fs & (item 1 of edges as text) & fs & (item 2 of edges as text) & fs & (item 3 of edges as text) & fs & (item 4 of edges as text) & fs & custom title of t & fs & windowID
         end repeat
       end repeat
       return output
@@ -129,6 +158,7 @@ struct AppleTerminalAdapter: TerminalAdapter {
             end try
             repeat with t in wtabs
               if tty of t is wanted then
+                if miniaturized of w then set miniaturized of w to false
                 set selected of t to true
                 set index of w to 1
                 my nameTab(t, item 1 of argv)
@@ -145,7 +175,8 @@ struct AppleTerminalAdapter: TerminalAdapter {
 }
 
 extension TerminalTabSnapshot {
-    public init?(output: String) {
+    public init?(output: String, windowID: Int32? = nil) {
+        self.windowID = windowID
         let lines = output.split(maxSplits: 5, whereSeparator: \.isNewline).map(String.init)
         guard lines.count >= 5, lines[0].hasPrefix("/dev/tty") else { return nil }
         let edges = lines[1...4].compactMap(Double.init)

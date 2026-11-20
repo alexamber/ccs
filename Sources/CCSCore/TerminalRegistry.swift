@@ -23,6 +23,21 @@ public protocol TerminalAdapter {
     func frontTab() -> TerminalTabSnapshot?
     func focus(paneID: String, title: String) throws
     func launch(command: String, title: String) throws
+    /// Refresh the target before invoking verify. A nil title declines focus.
+    /// Return false for a stale target, and throw for transport or focus failures.
+    func focusIfVerified(_ target: TerminalTabSnapshot, verify: (TerminalTabSnapshot) throws -> String?) throws -> Bool
+}
+
+extension TerminalAdapter {
+    public func focusIfVerified(_ target: TerminalTabSnapshot, verify: (TerminalTabSnapshot) throws -> String?) throws -> Bool {
+        guard let tab = try currentPane(for: target), let title = try verify(tab) else { return false }
+        try focus(paneID: tab.paneID, title: title)
+        return true
+    }
+
+    func currentPane(for target: TerminalTabSnapshot) throws -> TerminalTabSnapshot? {
+        try tabs().tabs.first { $0.paneID == target.paneID && $0.tty == target.tty }
+    }
 }
 
 public struct TerminalRegistry {

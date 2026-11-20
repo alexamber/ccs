@@ -9,6 +9,8 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     var onSettings: (() -> Void)?
     var onSave: ((Settings) throws -> Void)?
     private let search = NSSearchField(), table = NSTableView(), scroll = NSScrollView()
+    private let fileScope = NSButton(title: "Search files across sessions", target: nil, action: nil)
+    private var searchingAllFolders = false
     private var artifactWidth: NSLayoutConstraint!
     private let views = NSSegmentedControl(labels: ["Recent", "Folders"], trackingMode: .selectOne, target: nil, action: nil)
     private let ranges = NSSegmentedControl(labels: ["1d", "3d", "7d", "30d", "All"], trackingMode: .selectOne, target: nil, action: nil)
@@ -33,7 +35,8 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         let affected = IndexSet(rows.indices.filter { rows[$0].session.map { changed.contains($0.key) } == true })
         table.reloadData(forRowIndexes: affected, columnIndexes: IndexSet(integer: 0))
     }
-    private var terminalKeys: Set<String>?
+    private var terminalTargets: [String: TerminalSwitchTarget]?
+    private var terminalStatusCurrent = false
     private var refreshError: String?
     private let loadHistory: (@escaping (Result<HistorySnapshot, Error>) -> Void) -> Void
     private var launching = false, issues = [Provider: String]()
@@ -67,7 +70,11 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         search.placeholderString = "Search sessions and files"; search.font = .systemFont(ofSize: 17)
         search.delegate = self; search.sendsSearchStringImmediately = true
         search.setAccessibilityLabel("Search sessions and artifact filenames")
-        stack.addArrangedSubview(search); search.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        fileScope.target = self; fileScope.action = #selector(toggleFileScope)
+        fileScope.controlSize = .small; fileScope.isHidden = true
+        search.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let searchRow = NSStackView(views: [search, fileScope]); searchRow.alignment = .centerY
+        stack.addArrangedSubview(searchRow); searchRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         let bar = NSStackView(); bar.spacing = 10
         views.toolTip = "Recent: newest sessions first. Folders: group sessions by project folder. Switch with Control-Tab."
         views.target = self; views.action = #selector(changeView); views.selectedSegment = recent ? 0 : 1
@@ -166,7 +173,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     deinit { if let monitor { NSEvent.removeMonitor(monitor) }; timer?.invalidate() }
     func apply(_ settings: Settings) {
         let sourcesChanged = self.settings.enabledProviders != settings.enabledProviders
-        if sourcesChanged { generation += 1 }
+        if sourcesChanged { generation += 1; terminalTargets = nil; terminalStatusCurrent = false }
         if self.settings.defaultDays != settings.defaultDays { days = settings.defaultDays }
         if self.settings.folders != settings.folders { recent = !settings.folders }
         self.settings = settings
@@ -197,8 +204,8 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         }
         // Keep the last snapshot searchable while fresh metadata is collected.
         // Cached conversation metadata does not establish that its tab is still open.
-        terminalKeys = nil
-        search.stringValue = ""; reload()
+        terminalStatusCurrent = false
+        searchingAllFolders = false; search.stringValue = ""; reload()
         let point = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(point, $0.frame, false) } ?? NSScreen.main ?? NSScreen.screens[0]
         let f = screen.visibleFrame
@@ -257,9 +264,10 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
             switch result {
             case .success(let payload):
                 self.sessions = payload.sessions; self.issues = payload.issues
-                self.terminalKeys = payload.terminalKeys
+                self.terminalTargets = payload.terminalTargets
+                self.terminalStatusCurrent = payload.terminalTargets != nil
                 self.installedProviders = payload.installedProviders; self.hasLoaded = true
-            case .failure(let error): self.refreshError = error.localizedDescription; self.terminalKeys = nil
+            case .failure(let error): self.refreshError = error.localizedDescription; self.terminalTargets = nil; self.terminalStatusCurrent = false
             }
             // Finishing while hidden still warms the next opening.
             self.reload()
@@ -271,7 +279,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         defer { reloading = false; if panel.isVisible { updateArtifacts() } }
         let keep = selected?.key
         let cutoff = days == 0 ? 0 : Date().timeIntervalSince1970 - Double(days) * 86400
-        rows = sessionRows(sessions.filter { settings.enabledProviders.contains($0.provider) && settings.providerFilter.includes($0.provider) && (terminalKeys?.contains($0.key) == true || $0.mtime >= cutoff) }, query: search.stringValue, recent: recent, tree: false)
+        rows = sessionRows(sessions.filter { settings.enabledProviders.contains($0.provider) && settings.providerFilter.includes($0.provider) && ((terminalStatusCurrent && terminalTargets?[$0.key] != nil) || $0.mtime >= cutoff) }, query: search.stringValue, recent: recent, tree: false)
         let sessionCount = rows.filter { $0.session != nil }.count
         table.reloadData(); count.stringValue = "\(sessionCount) \(sessionCount == 1 ? "session" : "sessions")"
         empty.isHidden = rows.contains { $0.session != nil }; empty.stringValue = search.stringValue.isEmpty ? "No sessions in this range" : "No sessions match"
@@ -289,8 +297,11 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     }
     private func updateArtifacts(refresh: Bool = false) {
         let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        artifactWidth.constant = min(query.isEmpty ? 320 : 420, max(240, panel.frame.width - 503))
-        if query.isEmpty { artifactBrowser.show(folder: selected?.cwd, refresh: refresh) }
+        fileScope.isHidden = query.isEmpty || selected == nil
+        fileScope.title = searchingAllFolders ? "Show session files" : "Search files across sessions"
+        let globalSearch = !query.isEmpty && (selected == nil || searchingAllFolders)
+        artifactWidth.constant = min(globalSearch ? 420 : 320, max(240, panel.frame.width - 503))
+        if !globalSearch { artifactBrowser.show(folder: selected?.cwd, refresh: refresh) }
         else {
             // Date filters apply to conversation history. Global file search
             // includes all known folders for the selected providers.
@@ -346,7 +357,12 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         }
         return true
     }
-    func controlTextDidChange(_ obj: Notification) { reload() }
+    @objc func toggleFileScope() {
+        searchingAllFolders.toggle()
+        updateArtifacts()
+        panel.makeFirstResponder(search)
+    }
+    func controlTextDidChange(_ obj: Notification) { searchingAllFolders = false; reload() }
     @objc func changeView() { recent = views.selectedSegment == 0; reload() }
     @objc func changeRange() { days = dateWindows[ranges.selectedSegment]; reload() }
     @objc private func changeProvider() { selectFilter(ProviderFilter.allCases[providers.selectedSegment]) }
@@ -429,8 +445,12 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         } else { activate(s, fresh: fresh) }
     }
     func activate(_ s: Session, fresh: Bool) {
-        hide()
-        engine.perform({ service, _ in try service.activate(s, fresh: fresh) }) { if case .failure(let error) = $0 { showError(error) } }
+        let target = terminalTargets?[s.key], candidates = sessions
+        hide(restoreFocus: fresh || target == nil)
+        engine.perform({ service, _ in
+            if !fresh, let target { try service.activate(s, target: target, sessions: candidates) }
+            else { try service.activate(s, fresh: fresh) }
+        }) { if case .failure(let error) = $0 { showError(error) } }
     }
     func newSession() {
         guard !asking, !launching else { return }; launching = true; hide()
@@ -443,14 +463,14 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
     func tableViewSelectionDidChange(_ notification: Notification) {
-        if !reloading, panel.isVisible { updateArtifacts() }
+        if !reloading, panel.isVisible { searchingAllFolders = false; updateArtifacts() }
     }
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { rows[row].session != nil }
     func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { rows[row].session == nil }
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { rows[row].session == nil ? 26 : 48 }
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { PickerRow() }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        if let s = rows[row].session { return SessionCell(session: s, recent: recent, terminalOpen: terminalKeys.map { $0.contains(s.key) }, unattended: finishedKeys.contains(s.key)) }
+        if let s = rows[row].session { return SessionCell(session: s, recent: recent, terminalOpen: terminalStatusCurrent ? terminalTargets?[s.key] != nil : nil, unattended: finishedKeys.contains(s.key)) }
         let label = NSTextField(labelWithString: rows[row].label); label.font = .systemFont(ofSize: 11, weight: .semibold); label.textColor = .secondaryLabelColor; label.lineBreakMode = .byTruncatingMiddle
         return label
     }

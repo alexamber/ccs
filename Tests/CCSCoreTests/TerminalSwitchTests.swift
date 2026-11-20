@@ -32,6 +32,39 @@ final class TerminalSwitchTests: XCTestCase {
         XCTAssertEqual(focuses, 2)
     }
 
+    func testCachedPickerChecksLoadedIdentitiesAndRejectsNewAmbiguity() throws {
+        var ids = ["abc"], focuses = 0, historyReads = 0
+        func record(_ id: String) -> [String: Any] {
+            ["id": id, "cwd": "/tmp/work", "updatedAt": 1, "name": "Topic", "preview": "", "status": ["type": "idle"]]
+        }
+        let client = MockCodexConnection { method, params in
+            switch method {
+            case "thread/loaded/list": return ["data": ids]
+            case "thread/read": return ["thread": record(try XCTUnwrap(params["threadId"] as? String))]
+            case "thread/list": historyReads += 1; return ["data": ids.map(record)]
+            default: XCTFail("Unexpected RPC " + method); throw CCSError.message("Unexpected method")
+            }
+        }
+        let service = SessionService(runner: { path, _, script, _ in
+            if path == "/bin/ps" { return CommandResult(out: "123 1 ttys001 codex") }
+            if path == "/usr/sbin/lsof" { return CommandResult(out: "n/tmp/work") }
+            if script == SessionService.switchTabsScript {
+                return CommandResult(out: "\u{1e}/dev/ttys001\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}Topic")
+            }
+            XCTAssertEqual(script, SessionService.focusScript)
+            focuses += 1; return CommandResult(out: "ok")
+        }, codex: CodexProvider(connector: { client }), arguments: { _ in ["codex"] })
+        let session = try CodexProvider.session(record("abc"), authoritative: true)
+        let target = try XCTUnwrap(service.terminalSwitchContext(sessions: [session]).targets.first)
+        try service.activate(session, target: target, sessions: [session])
+        XCTAssertEqual(client.calls.map { $0.0 }, ["thread/loaded/list", "thread/read"])
+        XCTAssertEqual(focuses, 1)
+        ids.append("new")
+        XCTAssertThrowsError(try service.activate(session, target: target, sessions: [session]))
+        XCTAssertGreaterThan(historyReads, 0)
+        XCTAssertEqual(focuses, 1)
+    }
+
     func testClaudeFocusRejectsCachedPIDAfterSessionMoves() throws {
         var session = Session(id: "abc", cwd: "/tmp/work")
         session.live = try JSONDecoder().decode(LiveSession.self, from: Data("{\"sessionId\":\"abc\",\"pid\":123}".utf8))

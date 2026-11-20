@@ -90,6 +90,22 @@ public final class SessionService {
         }
         try activate(s, fresh: fresh)
     }
+    /// Picker rows retain the confirmed pane from their history snapshot. Only a
+    /// stale/missing match falls through to the usual focus-or-resume decision.
+    public func activate(_ session: Session, target: TerminalSwitchTarget, sessions: [Session]) throws {
+        if target.session?.key == session.key {
+            if session.provider == .codex {
+                // A newly loaded same-title thread can make the previous unique
+                // match ambiguous. Check live identities without paging history.
+                if let loaded = try? codex.loadedSessions(includeTurns: false),
+                   let current = loaded.first(where: { $0.key == session.key && $0.isLive }),
+                   try focusVerifiedPane(target, candidates: loaded + sessions.filter { $0.provider != .codex },
+                                         expectedSession: current) { return }
+            } else if try focusIfCurrent(target, sessions: sessions) { return }
+        }
+        try activate(session)
+    }
+
     public func activate(_ s: Session, fresh: Bool = false) throws {
         if s.provider == .codex { return try activateCodex(s, fresh: fresh) }
         if fresh { try openTerminal("cd \(shellQuote(s.cwd)) && claude", title: s.folderTitle); return }
@@ -141,7 +157,7 @@ public final class SessionService {
         guard result.code == 0 else { throw CCSError.message("Could not inspect Terminal processes.") }
         return Self.candidateTTYs(s, live: live, processList: result.out, arguments: arguments)
     }
-    public static func candidateTTYs(_ s: Session, live: LiveSession, processList: String, arguments: ((Int32) -> [String]?)? = nil) -> [String] {
+    public static func candidateTTYs(_ s: Session, live: LiveSession, processList: String, viewerTTY: String? = nil, arguments: ((Int32) -> [String]?)? = nil) -> [String] {
         var procs = [Int: (Int, String, String)](), viewers = [String]()
         let keys = Set([s.id, live.id, live.name].compactMap { $0 })
         for line in processList.split(separator: "\n") {
@@ -149,6 +165,8 @@ public final class SessionService {
             guard p.count >= 3, let pid = Int(p[0]), let parent = Int(p[1]) else { continue }
             let command = p.count == 4 ? String(p[3]) : ""
             procs[pid] = (parent, String(p[2]), command)
+            // Keep every parent for ancestry, but inspect attach arguments only on the requested device.
+            if let viewerTTY, p[2] != viewerTTY { continue }
             if let arguments, let words = arguments(Int32(clamping: pid)) {
                 if words.count >= 3, URL(fileURLWithPath: words[0]).lastPathComponent == "claude", words[1] == "attach", keys.contains(words[2]) { viewers.append(String(p[2])) }
             } else if arguments == nil, let range = command.range(of: #"(?:^|/)claude attach "#, options: .regularExpression) {

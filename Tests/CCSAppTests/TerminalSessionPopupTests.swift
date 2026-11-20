@@ -243,15 +243,22 @@ final class TerminalSessionPopupTests: XCTestCase {
     func testInterruptedMorphFinishesAtLatestPhase() {
         _ = NSApplication.shared
         let popup = TerminalSessionPopup(artifactBrowser: ArtifactBrowser(showLocation: false, visibleRowLimit: 5, loader: { _, done in done(ArtifactSnapshot()) }))
+        NSApp.activate(ignoringOtherApps: true)
+        popup.configureFloating(enabled: true, allSpaces: true)
         popup.show(Session(id: "a", cwd: "/tmp", title: "Small topic"), tab: tab(1))
         popup.collapse(restoreFocus: false); settle()
         popup.expand()
-        let halfway = expectation(description: "morph in progress")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.07) { halfway.fulfill() }
-        wait(for: [halfway], timeout: 1)
         if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            XCTAssertGreaterThan(popup.panel.frame.width, 56)
-            XCTAssertLessThan(popup.panel.frame.width, 380)
+            let halfway = expectation(description: "an intermediate frame before interrupting the expansion")
+            let observer = Timer(timeInterval: 0.005, repeats: true) { timer in
+                if popup.panel.frame.width > 56 && popup.panel.frame.width < 380 {
+                    timer.invalidate()
+                    halfway.fulfill()
+                }
+            }
+            RunLoop.main.add(observer, forMode: .common)
+            wait(for: [halfway], timeout: 1)
+            observer.invalidate()
         }
         popup.collapse(restoreFocus: false); settle()
         XCTAssertEqual(popup.phase, .collapsed)

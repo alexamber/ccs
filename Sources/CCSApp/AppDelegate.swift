@@ -6,10 +6,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let terminals = TerminalRegistry.system()
     let engine = Engine(), hotkey = HotKey()
     private let nextSessionKey = HotKey(id: 2), previousSessionKey = HotKey(id: 3)
-    private let sessionSwitcher = SessionSwitcher()
-    private var switchUpdated = Date.distantPast
-    private var switchKeysByTTY = [String: String]()
-    private var switchTargets = [TerminalSwitchTarget](), switchHistory = [String]()
     var settings = Settings.load()
     var popup: Popup!, preferences: Preferences!, status: NSStatusItem!
     var showObserver: NSObjectProtocol?
@@ -92,9 +88,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         nextSessionKey.onPress = { [weak self] in self?.switchSession(step: 1) }
         previousSessionKey.onPress = { [weak self] in self?.switchSession(step: -1) }
-        sessionSwitcher.onCommit = { [weak self] target, sessions in
-            self?.focus(target, sessions: sessions)
-        }
         let appMenu = NSMenu()
         appMenu.addItem(item("About CCS", #selector(about)))
         appMenu.addItem(item("Settings…", #selector(showSettings), key: ","))
@@ -160,10 +153,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         do {
             if shortcutChanged { try hotkey.register(code: value.hotkeyCode, modifiers: value.hotkeyModifiers) }
             if save { try value.save() }
-            if old.enabledProviders != value.enabledProviders {
-                switchTargets = []; switchKeysByTTY = [:]; switchUpdated = .distantPast
-                sessionSwitcher.hide()
-            }
             settings = value; popup.apply(value); preferences.apply(value)
             terminalMonitor?.configure(enabled: value.terminalPopups)
             terminalPopup.configureFloating(enabled: value.terminalPopups, allSpaces: value.unicornAllSpaces, size: value.unicornSize)
@@ -175,10 +164,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if shortcutChanged { try? hotkey.register(code: old.hotkeyCode, modifiers: old.hotkeyModifiers) }
             throw error
         }
-    }
-    private func rememberSwitch(_ key: String) {
-        switchHistory.removeAll { $0 == key }; switchHistory.insert(key, at: 0)
-        switchHistory = Array(switchHistory.prefix(100))
     }
     private func configureActivityEvents() {
         let enabled = settings.terminalPopups
@@ -229,18 +214,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     private func focus(_ target: TerminalSwitchTarget, sessions: [Session]) {
         sessionOverview.close()
-        engine.perform({ service, _ in try service.focusTerminalTarget(target, sessions: sessions) }) { [weak self] result in
-            switch result {
-            case .success: self?.rememberSwitch(target.key)
-            case .failure(let error): self?.switchUpdated = .distantPast; showError(error)
-            }
+        engine.perform({ service, _ in try service.focusTerminalTarget(target, sessions: sessions) }) { result in
+            if case .failure(let error) = result { showError(error) }
         }
     }
     private func showSessionOverview(anchor: NSView) {
         if sessionOverview.isShown { sessionOverview.close(); return }
-        popup.hide(restoreFocus: false); sessionSwitcher.hide()
-        let generation = sessionOverview.show(anchor: anchor, cached: activity.recentSnapshot, finished: activity.finished)
+        let generation = openSessionOverview(anchor: anchor)
         refreshSessionOverview(generation: generation)
+    }
+    private func openSessionOverview(anchor: NSView) -> Int {
+        popup.hide(restoreFocus: false)
+        return sessionOverview.show(anchor: anchor, cached: activity.recentSnapshot, finished: activity.finished)
     }
     private func refreshSessionOverview(generation: Int) {
         activity.refresh { [weak self] result in
@@ -252,53 +237,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
     }
-    private func orderedTargets(_ targets: [TerminalSwitchTarget]) -> [TerminalSwitchTarget] {
-        targets.sorted {
-            let a = switchHistory.firstIndex(of: $0.key) ?? Int.max
-            let b = switchHistory.firstIndex(of: $1.key) ?? Int.max
-            return a == b ? ($0.session?.mtime ?? 0) > ($1.session?.mtime ?? 0) : a < b
-        }
-    }
     private func switchSession(step: Int) {
         guard !preferences.finishRecordingCurrentShortcut() else { return }
-        if sessionSwitcher.panel.isVisible { sessionSwitcher.cycle(step); return }
-        let origin = terminals.supported(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)?.bundleID
-        let cached = Date().timeIntervalSince(switchUpdated) < 30 ? orderedTargets(switchTargets) : []
-        let keysByTTY = switchKeysByTTY
-        popup.hide(restoreFocus: false); sessionOverview.close(); terminalPopup.collapse(restoreFocus: false)
-        let presentation = sessionSwitcher.show(targets: cached, step: step)
-        if !cached.isEmpty {
-            if let origin {
-                engine.loadSwitchOrigin(terminalID: origin) { [weak self] result in
-                    guard let self, self.sessionSwitcher.presentation == presentation else { return }
-                    do {
-                        let tty = try result.get()
-                        let current = tty.flatMap { keysByTTY[$0] }
-                        self.sessionSwitcher.supply(cached, currentKey: current, presentation: presentation)
-                    } catch { self.sessionSwitcher.showFailure("Couldn’t read the current tab. Press Esc and try again.", presentation: presentation) }
-                }
-            } else {
-                sessionSwitcher.supply(cached, currentKey: nil, presentation: presentation)
-            }
+        if sessionOverview.isSwitching { sessionOverview.cycle(step); return }
+        if sessionOverview.isShown {
+            sessionOverview.beginSwitch(step: step, fromSelection: true)
+            return
         }
-        let enabled = settings.enabledProviders
-        engine.loadSwitchContext(enabledProviders: enabled, originTerminalID: origin) { [weak self] result in
-            guard let self, self.settings.enabledProviders == enabled else { return }
-            let sameGesture = self.sessionSwitcher.presentation == presentation
-            do {
-                let context = try result.get()
-                let current = origin != nil ? context.currentKey : nil
-                if sameGesture, let current { self.rememberSwitch(current) }
-                self.switchTargets = self.orderedTargets(context.targets)
-                self.switchKeysByTTY = context.keysByTTY
-                self.switchUpdated = Date()
-                if sameGesture, cached.isEmpty {
-                    self.sessionSwitcher.supply(self.switchTargets, currentKey: current, presentation: presentation)
+        let previous = NSWorkspace.shared.frontmostApplication
+        let origin = terminals.supported(bundleID: previous?.bundleIdentifier)
+        let anchor = terminalPopup.panel.isVisible && terminalPopup.panel.isOnActiveSpace
+            ? terminalPopup.prepareSessionMenu() : status.button
+        guard let anchor else { return }
+        let generation = openSessionOverview(anchor: anchor)
+        sessionOverview.beginSwitch(step: step, previous: previous)
+        if let origin {
+            engine.loadSwitchOrigin(terminalID: origin.bundleID) { [weak self] result in
+                guard let menu = self?.sessionOverview, menu.isSwitching, menu.generation == generation else { return }
+                switch result {
+                case .success(let tty): menu.supplyOrigin(tty: tty, generation: generation)
+                case .failure(let error): menu.endSwitch(); menu.fail(error, generation: generation)
                 }
-            } catch {
-                if sameGesture, cached.isEmpty { self.sessionSwitcher.showFailure("Couldn’t refresh sessions. Press Esc and try again.", presentation: presentation) }
             }
+        } else {
+            sessionOverview.supplyOrigin(tty: nil, generation: generation)
         }
+        refreshSessionOverview(generation: generation)
     }
     func item(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: key); item.target = self; return item

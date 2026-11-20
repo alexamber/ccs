@@ -89,8 +89,22 @@ final class ArtifactBrowserTests: XCTestCase {
                 try png.write(to: URL(fileURLWithPath: directory).appendingPathComponent("picker-files-\(name).png"))
             }
         }
+        func fields(_ view: NSView) -> [NSSearchField] { (view as? NSSearchField).map { [$0] } ?? view.subviews.flatMap(fields) }
+        let search = try XCTUnwrap(fields(popup.panel.contentView!).first)
+        search.stringValue = "project"
+        popup.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        settle()
+        XCTAssertFalse(browser.isGlobalSearch)
+        XCTAssertEqual(browser.files.first?.url.lastPathComponent, "report.html")
+        popup.toggleFileScope(); settle()
+        XCTAssertTrue(browser.isGlobalSearch)
+        XCTAssertTrue(browser.files.isEmpty)
         let previous = popup.selected?.id
         popup.move(1); settle()
+        XCTAssertEqual(search.stringValue, "project")
+        XCTAssertFalse(browser.isGlobalSearch)
+        popup.reload(); settle()
+        XCTAssertFalse(browser.isGlobalSearch)
         XCTAssertNotEqual(popup.selected?.id, previous)
         XCTAssertEqual(browser.files.first?.url.deletingLastPathComponent().path, popup.selected?.cwd)
         XCTAssertTrue(popup.handle(key(124, window: popup.panel)))

@@ -15,106 +15,103 @@ final class SessionSwitchTests: XCTestCase {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { done.fulfill() }
         wait(for: [done], timeout: 2)
     }
-    func testSwitchWrapsReversesAndCommitsOnlyOnOptionRelease() throws {
+    private var menu: SessionOverview!
+    private var bubble: TerminalSessionPopup!
+    override func setUp() {
+        super.setUp()
         _ = NSApplication.shared
-        let popup = SessionSwitcher(), targets = targets()
+        menu = SessionOverview()
+        bubble = TerminalSessionPopup()
+        bubble.configureFloating(enabled: true, allSpaces: true)
+    }
+    override func tearDown() {
+        menu.close(); bubble.hide()
+        menu = nil; bubble = nil
+        super.tearDown()
+    }
+    private func snapshot(_ values: [TerminalSwitchTarget]) -> TerminalActivitySnapshot {
+        TerminalActivitySnapshot(context: TerminalSwitchContext(targets: values, currentKey: nil))
+    }
+
+    func testReleaseCommitsOnceInMenuOrderWithWrapAndReverse() {
+        let rows = targets()
         var held = true, committed = [String]()
-        popup.onCommit = { committed.append($0.session!.id); XCTAssertEqual($1.count, 3) }
-        let first = popup.show(step: 1, optionHeld: { held })
-        popup.supply(targets, currentKey: targets[0].key, presentation: first)
-        XCTAssertEqual(popup.selected?.session?.id, "b")
-        popup.cycle(2); XCTAssertEqual(popup.selected?.session?.id, "a")
-        popup.cycle(-1); XCTAssertEqual(popup.selected?.session?.id, "c")
-        popup.supply(Array(targets.reversed()), currentKey: nil, presentation: first)
-        XCTAssertEqual(popup.selected?.session?.id, "c", "A refresh must not change the choice mid-gesture")
+        menu.onSelect = { committed.append($0.key); XCTAssertEqual($1.count, 3) }
+        let generation = menu.show(anchor: bubble.panel.contentView!, cached: snapshot(Array(rows.reversed())))
+        menu.beginSwitch(step: 1, optionHeld: { held })
+        XCTAssertNil(menu.highlighted)
+        menu.commitSwitch()
         XCTAssertTrue(committed.isEmpty)
-        if let directory = ProcessInfo.processInfo.environment["CCS_UI_ARTIFACT_DIR"] {
-            try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-            let view = try XCTUnwrap(popup.panel.contentView)
-            for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
-                popup.panel.appearance = NSAppearance(named: appearance)
-                view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
-                let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
-                view.cacheDisplay(in: view.bounds, to: bitmap)
-                try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: directory).appendingPathComponent("switcher-\(name).png"))
-            }
-        }
+        menu.supplyOrigin(tty: rows[0].tab.tty, generation: generation)
+        XCTAssertEqual(menu.highlighted?.key, rows[1].key)
+        menu.cycle(2); XCTAssertEqual(menu.highlighted?.key, rows[0].key)
+        menu.cycle(-1); XCTAssertEqual(menu.highlighted?.key, rows[2].key)
+        menu.supplyOrigin(tty: nil, generation: generation)
+        menu.supply(snapshot(rows), finished: [], generation: generation)
+        XCTAssertEqual(menu.highlighted?.key, rows[2].key)
         held = false; settle()
-        XCTAssertEqual(committed, ["c"]); XCTAssertFalse(popup.panel.isVisible)
-        let next = popup.show(step: 1, optionHeld: { true })
-        popup.supply(targets, currentKey: nil, presentation: next)
-        XCTAssertEqual(popup.selected?.session?.id, "a")
-        popup.hide()
-        XCTAssertEqual(committed, ["c"], "Dismissal cancels a pending switch")
+        XCTAssertEqual(committed, [rows[2].key]); XCTAssertFalse(menu.isShown)
     }
-    func testFirstHighlightIsNextSessionAndLateRefreshCannotMoveIt() {
-        _ = NSApplication.shared
-        let popup = SessionSwitcher(), targets = targets()
-        var commits = 0
-        popup.onCommit = { _, _ in commits += 1 }
-        let request = popup.show(targets: targets, step: 1, optionHeld: { true })
-        XCTAssertNil(popup.highlighted, "Do not flash a guessed current-row highlight")
-        popup.commit(); XCTAssertEqual(commits, 0)
-        popup.supply(targets, currentKey: targets[0].key, presentation: request)
-        XCTAssertEqual(popup.highlighted?.key, targets[1].key, "Opening press is applied before the first highlight")
-        popup.supply(Array(targets.reversed()), currentKey: targets[2].key, presentation: request)
-        XCTAssertEqual(popup.highlighted?.key, targets[1].key, "A slower refresh must not change selection or order")
-        popup.cycle(1); XCTAssertEqual(popup.selected?.key, targets[2].key)
-        popup.cycle(-1); XCTAssertEqual(popup.selected?.key, targets[1].key)
-        popup.commit(); XCTAssertEqual(commits, 1)
+
+    func testQuickReverseWhileLoadingPreservesAllKeystrokes() {
+        let rows = targets()
+        var committed = [String]()
+        menu.onSelect = { target, _ in committed.append(target.key) }
+        let generation = menu.show(anchor: bubble.panel.contentView!)
+        menu.beginSwitch(step: -1, optionHeld: { false })
+        menu.cycle(-1)
+        menu.supplyOrigin(tty: rows[0].tab.tty, generation: generation)
+        settle(); XCTAssertTrue(committed.isEmpty)
+        menu.supply(snapshot(rows), finished: [], generation: generation)
+        settle()
+        XCTAssertEqual(committed, [rows[1].key])
     }
-    func testReverseOpeningAndKeysDuringOriginLookupAreAppliedExactlyOnce() {
-        _ = NSApplication.shared
-        let popup = SessionSwitcher(), targets = targets()
-        let request = popup.show(step: -1, optionHeld: { true })
-        popup.cycle(-1)
-        XCTAssertNil(popup.highlighted)
-        popup.supply(targets, currentKey: targets[0].key, presentation: request)
-        XCTAssertEqual(popup.selected?.key, targets[1].key)
-        popup.cycle(-1); XCTAssertEqual(popup.selected?.key, targets[0].key)
-        popup.hide()
+
+    func testAlreadyOpenMenuCyclesWithinFilterAndSkipsUnavailableRows() {
+        var rows = targets()
+        rows = rows.enumerated().map { index, target in
+            var session = target.session!
+            session.title = index == 1 ? "Unrelated" : "Review item"
+            return TerminalSwitchTarget(session: session, tab: target.tab)
+        }
+        let generation = menu.show(anchor: bubble.panel.contentView!, cached: snapshot(rows))
+        menu.search.stringValue = "Review"
+        menu.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+        XCTAssertEqual(menu.visibleKeys, [rows[0].key, rows[2].key])
+        menu.beginSwitch(step: 1, fromSelection: true, optionHeld: { true })
+        XCTAssertEqual(menu.generation, generation)
+        XCTAssertEqual(menu.highlighted?.key, rows[2].key)
+        menu.supply(snapshot([rows[2]]), finished: [], generation: generation)
+        menu.cycle(1); XCTAssertEqual(menu.highlighted?.key, rows[2].key)
+        menu.onSelect = { _, _ in XCTFail("Escape must cancel even when the list is filtered") }
+        menu.cancelSearchOrClose()
+        XCTAssertFalse(menu.isShown); XCTAssertFalse(menu.isSwitching)
     }
-    func testGenericTabCanCommitWithoutInventingAConversation() {
-        _ = NSApplication.shared
-        let popup = SessionSwitcher()
+
+    func testStaleOriginCannotSelectInReopenedMenu() {
+        let rows = targets()
+        var committed = [String]()
+        menu.onSelect = { target, _ in committed.append(target.key) }
+        let old = menu.show(anchor: bubble.panel.contentView!, cached: snapshot(rows))
+        menu.beginSwitch(step: 1, optionHeld: { false })
+        menu.close()
+        let current = menu.show(anchor: bubble.panel.contentView!, cached: snapshot(rows))
+        menu.beginSwitch(step: 1, optionHeld: { false })
+        menu.supplyOrigin(tty: rows[2].tab.tty, generation: old)
+        settle(); XCTAssertTrue(committed.isEmpty)
+        menu.supplyOrigin(tty: rows[1].tab.tty, generation: current)
+        settle(); XCTAssertEqual(committed, [rows[2].key])
+    }
+
+    func testUnconfirmedTabCanCommitWithoutConversation() {
         let target = TerminalSwitchTarget(session: nil, tab: targets()[0].tab, processID: 123)
         var committed = false
-        popup.onCommit = { selected, sessions in
-            XCTAssertEqual(selected.key, target.key)
-            XCTAssertNil(selected.session); XCTAssertTrue(sessions.isEmpty)
-            committed = true
+        menu.onSelect = { choice, sessions in
+            XCTAssertEqual(choice.key, target.key); XCTAssertTrue(sessions.isEmpty); committed = true
         }
-        let presentation = popup.show(step: 1, optionHeld: { false })
-        popup.supply([target], currentKey: nil, presentation: presentation)
+        let generation = menu.show(anchor: bubble.panel.contentView!, cached: snapshot([target]))
+        menu.beginSwitch(step: -1, optionHeld: { false })
+        menu.supplyOrigin(tty: nil, generation: generation)
         settle(); XCTAssertTrue(committed)
-    }
-    func testPendingOriginRejectsAnEarlierGesture() {
-        _ = NSApplication.shared
-        let popup = SessionSwitcher(), targets = targets()
-        var committed = [String]()
-        popup.onCommit = { target, _ in committed.append(target.session!.id) }
-        let old = popup.show(step: 1, optionHeld: { false })
-        settle()
-        XCTAssertNil(popup.selected); XCTAssertTrue(committed.isEmpty)
-        popup.hide()
-        let current = popup.show(step: 1, optionHeld: { false })
-        popup.supply(targets, currentKey: targets[0].key, presentation: old)
-        settle(); XCTAssertTrue(committed.isEmpty)
-        popup.supply(targets, currentKey: targets[1].key, presentation: current)
-        settle(); XCTAssertEqual(committed, ["c"])
-    }
-    func testShowsBeforeLoadingAndKeepsStepsUntilResultsArrive() {
-        _ = NSApplication.shared
-        let popup = SessionSwitcher(), targets = targets()
-        var committed = [String]()
-        popup.onCommit = { target, _ in committed.append(target.session!.id) }
-        let request = popup.show(step: 1, optionHeld: { false })
-        XCTAssertTrue(popup.panel.isVisible); XCTAssertNil(popup.selected)
-        popup.cycle(1); popup.supply(targets, currentKey: targets[0].key, presentation: request)
-        XCTAssertEqual(popup.selected?.session?.id, "c")
-        settle(); XCTAssertEqual(committed, ["c"])
-        let cancelled = popup.show(step: 1, optionHeld: { false })
-        popup.hide(); popup.supply(targets, currentKey: nil, presentation: cancelled); settle()
-        XCTAssertEqual(committed, ["c"], "Late results after cancellation must not switch a tab")
     }
 }

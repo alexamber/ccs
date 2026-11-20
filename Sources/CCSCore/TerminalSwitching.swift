@@ -40,18 +40,7 @@ extension SessionService {
 
     public func terminalSwitchContext(sessions: [Session], includeUnconfirmedCodex: Bool = true, codexSocketPath: String? = nil,
                                       originTerminalID: String? = nil) throws -> TerminalSwitchContext {
-        try terminalSwitchContext(sessions: sessions, includeUnconfirmedCodex: includeUnconfirmedCodex, onlyTab: nil,
-                                  codexSocketPath: codexSocketPath, originTerminalID: originTerminalID)
-    }
-
-    private func terminalSwitchContext(sessions: [Session], includeUnconfirmedCodex: Bool, onlyTab: TerminalTabSnapshot?,
-                                       codexSocketPath: String? = nil, originTerminalID: String? = nil) throws -> TerminalSwitchContext {
-        let adapters: [any TerminalAdapter]
-        if let onlyTab {
-            adapters = [try terminals.adapter(for: onlyTab.terminalID)]
-        } else {
-            adapters = terminals.installed
-        }
+        let adapters = terminals.installed
         var tabs = [TerminalTabSnapshot](), currentTTY: String?
         for adapter in adapters {
             let inventory = try adapter.tabs()
@@ -69,7 +58,6 @@ extension SessionService {
         var targets = [TerminalSwitchTarget](), seen = Set<String>()
         var currentKey: String?, keysByTTY = [String: String]()
         for tab in tabs {
-            if let onlyTab, tab.paneID != onlyTab.paneID || tab.tty != onlyTab.tty { continue }
             let session = terminalSession(tty: tab.tty, title: tab.title, sessions: live, processList: processes.out, codexSocketPath: codexSocketPath)
             let process = CodexProvider.terminalProcess(tty: String(tab.tty.dropFirst(5)), processList: processes.out, arguments: processArguments)
             guard session != nil || (includeUnconfirmedCodex && process != nil) else { continue }
@@ -84,16 +72,23 @@ extension SessionService {
     /// Switching only focuses an existing, freshly matched tab. It never resumes
     /// or launches a process if a session has ended since the switcher opened.
     public func focusTerminalTarget(_ target: TerminalSwitchTarget, sessions: [Session]) throws {
+        guard try focusIfCurrent(target, sessions: sessions) else {
+            throw CCSError.message("That terminal tab changed or is no longer available. Open the switcher again.")
+        }
+    }
+
+    func focusIfCurrent(_ target: TerminalSwitchTarget, sessions: [Session]) throws -> Bool {
         var candidates = sessions
         if let session = target.session {
             if session.provider == .codex {
                 let current = try codex.current(session.id)
-                guard current.isLive else { throw CCSError.message("That Codex session is no longer active.") }
+                guard current.isLive else { return false }
                 candidates.removeAll { $0.key == current.key }; candidates.append(current)
             } else {
-                guard let running = liveSessions(), let live = running[session.id] else {
+                guard let running = liveSessions() else {
                     throw CCSError.message("That Claude session is no longer active, or its status could not be checked.")
                 }
+                guard let live = running[session.id] else { return false }
                 candidates = candidates.map { session in
                     var current = session
                     if current.provider == .claude { current.live = running[current.id] }
@@ -109,14 +104,25 @@ extension SessionService {
             guard target.processID != nil else { throw CCSError.message("That Terminal tab could not be verified.") }
             candidates = []
         }
-        let context = try terminalSwitchContext(sessions: candidates, includeUnconfirmedCodex: target.session == nil, onlyTab: target.tab)
-        guard let verified = context.targets.first(where: {
-            $0.tab.tty == target.tab.tty && $0.key == target.key &&
-                (target.processID == nil || $0.processID == target.processID)
-        }) else {
-            throw CCSError.message("That Terminal tab changed or is no longer available. Open the switcher again.")
+        return try focusVerifiedPane(target, candidates: candidates, expectedSession: target.session)
+    }
+
+    func focusVerifiedPane(_ target: TerminalSwitchTarget, candidates: [Session], expectedSession: Session?) throws -> Bool {
+        let adapter = try terminals.adapter(for: target.tab.terminalID)
+        let live = candidates.filter(\.isLive)
+        return try adapter.focusIfVerified(target.tab) { tab in
+            let processes = try runner("/bin/ps", ["-axo", "pid=,ppid=,tty=,command="], nil, 5)
+            guard processes.code == 0 else { throw CCSError.message("Couldn’t inspect running terminal sessions.") }
+            if let expected = target.processID {
+                let client = CodexProvider.terminalProcess(tty: String(tab.tty.dropFirst(5)), processList: processes.out,
+                                                          arguments: processArguments)
+                guard client?.pid == expected else { return nil }
+            }
+            guard let session = expectedSession else { return "" }
+            let match = terminalSession(tty: tab.tty, title: tab.title, sessions: live, processList: processes.out)
+            guard match?.key == session.key else { return nil }
+            return match?.terminalTitle
         }
-        try terminals.focus(verified.tab, title: verified.session?.terminalTitle ?? "")
     }
 
     public static let switchTabsScript = AppleTerminalAdapter.switchTabsScript

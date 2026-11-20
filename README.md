@@ -18,7 +18,7 @@ Requires macOS 14 or later, Terminal.app, and at least one installed command,
 
 ## Install
 
-Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v1.3.2/CCS-1.3.2-macos-universal.dmg),
+Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v1.3.3/CCS-1.3.3-macos-universal.dmg),
 drag CCS into Applications, and open it. Choose **Install Command-Line Tool** in
 the CCS menu to install the terminal picker too. Both Apple Silicon and Intel
 executables are included.
@@ -173,22 +173,17 @@ use the same title and folder checks. Renamed tabs, conflicting IDs, unsupported
 or unavailable metadata can prevent a label. Switching quickly can skip intermediate
 tabs. Popups never rename tabs or open a session.
 
-**Option-Tab** opens a compact switcher of existing Terminal tabs across enabled
-providers. Recognized Codex clients without a confirmed conversation appear as
-**Codex tab**, with their terminal identifier and “Conversation unconfirmed.”
-These rows focus the existing client without renaming it or guessing its files.
-The switcher reuses its recent list and reads only the current Terminal tab before
-showing the first selection. That highlight already includes the opening Tab press;
-refreshes never move it or reorder rows during a gesture. The chosen tab is validated
-before focus. Session labels refresh separately, so newly started conversations may
-appear on the next opening. A cold start still needs the initial tab enumeration. Hold Option and tap Tab to
-cycle, add Shift to move backward, and release Option to focus the highlighted tab.
-Escape cancels. Each confirmed conversation appears once, even if multiple tabs share its
-session ID; different conversations in the same folder remain separate. Unconfirmed
-clients appear individually until CCS can identify them. This view does not scan folders or show artifacts; Option-Space
-opens the full picker with files. CCS remembers recently chosen sessions for quick switching back. Each
-focus rechecks the tab; an ended session is never resumed by this shortcut. These
-shortcuts use native hotkey registration and need no Accessibility permission.
+**Option-Tab** opens the same Active sessions menu as right-clicking the unicorn.
+Hold Option and tap Tab to advance through the visible rows. Add Shift to go
+backward, release Option to focus the highlighted tab, or press Escape to cancel.
+From Terminal, the first press advances from the current tab. In an already-open
+menu it advances from the highlighted row and respects the search filter.
+If the unicorn is hidden, the menu opens from the CCS menu bar icon.
+
+The menu groups sessions by activity and keeps their order stable while you cycle.
+Recognized Codex clients with unconfirmed conversations appear as **Codex tab**.
+Selecting one focuses the existing client and preserves its title. CCS verifies
+the selected tab before focusing it. Option-Space opens the full picker with files.
 
 ## Nearby reports and documents
 
@@ -198,14 +193,16 @@ Return to open a file, and Left to return to sessions. Clicks open files in thei
 default app. The sidebar also has a file-name filter. In the sidebar and expanded
 bubble, click the folder icon beside the path to open the workspace in Finder.
 
-The picker's main **Search sessions and files** field also finds artifacts by
-filename and path across known session folders. File results appear on the right
-with their parent folder, even when no conversation title matches. This search
-uses all session dates and respects the provider filter; shared folders and files
-are deduplicated. Right moves into file results; Down also enters files when no
-session matches. Return opens the selected file when no session matches. ⌘F
-returns to the main search. File rows keep their positions once you interact
-with them, while new matches arrive. Clearing the query restores the selected folder's files.
+Typing in **Search sessions and files** filters the session list. As you move
+through matches, the sidebar shows the selected folder’s files. Use **Filter files**
+in the sidebar to narrow that folder by filename. To use the main query across
+folders, click **Search files across sessions**. When no session matches, the
+picker shows cross-folder filename and path matches automatically.
+
+Cross-folder results include all session dates and respect the provider filter.
+Right enters file results. When only files match, Down enters them and Return opens
+the selected file. ⌘F returns to the main search. Selecting another session
+restores its folder’s files and keeps the session query.
 Use ⌘R to refresh discovery. Document contents are not searched.
 
 Cross-folder discovery runs only during an explicit search, one folder at a time,

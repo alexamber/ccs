@@ -506,11 +506,12 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         setPhase(.collapsed, animate: false)
         panel.orderFrontRegardless()
     }
-    func showSessions() {
+    func showSessions() { onShowSessions?(prepareSessionMenu()) }
+    func prepareSessionMenu() -> NSView {
         stopLoading(); speech.hide(); hovering = false
         setPhase(.collapsed, animate: false)
         overviewPresented = true
-        onShowSessions?(mark)
+        return mark
     }
     func sessionOverviewClosed() { overviewPresented = false; hovering = false }
     func show(_ session: Session, tab: TerminalTabSnapshot) {
