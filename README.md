@@ -18,7 +18,7 @@ Requires macOS 14 or later, Terminal.app, and at least one installed command,
 
 ## Install
 
-Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v1.3.0/CCS-1.3.0-macos-universal.dmg),
+Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v1.3.1/CCS-1.3.1-macos-universal.dmg),
 drag CCS into Applications, and open it. Choose **Install Command-Line Tool** in
 the CCS menu to install the terminal picker too. Both Apple Silicon and Intel
 executables are included.
@@ -275,7 +275,7 @@ to list history. See the [official app-server documentation](https://learn.chatg
 
 In the native picker, colored dots require a confirmed open Terminal tab. A hollow
 circle means no tab was confirmed; a question mark means tab status is unavailable.
-Native session indicators use yellow for working, green for ready, and orange for
+Native session indicators use yellow for working, green for ready, and purple for
 attention. The open unicorn session menu receives status changes as they arrive,
 without moving rows while you are interacting with it.
 The picker checks tabs during its five-second refresh while open, and checks

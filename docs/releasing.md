@@ -148,8 +148,8 @@ Claude/Codex versions and build number. Avoid testing with unsaved work at risk.
    not establish a precise battery-life percentage.
 10. **Updates and acknowledgement.** With attention and completion alerts enabled,
     run work in two identified sessions while another app is focused. Trigger an
-    approval/input request and a completed turn. Pass: working is yellow, ready
-    green, attention orange. Each event shows its own message and session name in
+    approval/input request and a completed turn. In the lists, working is yellow,
+    ready is green, and attention is purple. Each event shows its own message and session name in
     a readable thought bubble. A second event waits its turn; hover pauses the
     five-second timeout. Opening files, the active-session menu, or dragging pauses
     delivery. Visit the session through Terminal's own controls for one second:

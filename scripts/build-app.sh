@@ -26,6 +26,10 @@ app="$PWD/build/CCS.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$PWD/dist" "$PWD/.build/module-cache"
 install -m 755 "$bin/CCSApp" "$app/Contents/MacOS/CCSApp"
 install -m 755 "$bin/ccs" "$app/Contents/MacOS/ccs"
+if [ "$mode" = --release ]; then
+    # Debug symbols include absolute paths from the build machine.
+    xcrun strip -S "$app/Contents/MacOS/CCSApp" "$app/Contents/MacOS/ccs"
+fi
 if [ "$app_only" != --app-only ]; then
     for arch in arm64 x86_64; do
         lipo "$app/Contents/MacOS/CCSApp" -verify_arch "$arch"

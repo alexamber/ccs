@@ -4,7 +4,7 @@ import CCSCore
 extension SessionActivity {
     var tint: NSColor {
         switch self {
-        case .attention: return .systemOrange
+        case .attention: return .systemPurple
         case .busy: return .systemYellow
         case .ready: return .systemGreen
         case .unknown: return .secondaryLabelColor
