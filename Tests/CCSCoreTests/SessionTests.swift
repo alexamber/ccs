@@ -86,7 +86,7 @@ final class SessionTests: XCTestCase {
             if path == "/bin/ps" { return CommandResult(out: list) }
             scripts.append(input ?? "")
             if input == SessionService.switchTabsScript {
-                return CommandResult(out: "\u{1e}/dev/ttys010\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}Topic")
+                return CommandResult(out: terminalInventory([("/dev/ttys010", "Topic")]))
             }
             return CommandResult(out: "ok\n")
         })

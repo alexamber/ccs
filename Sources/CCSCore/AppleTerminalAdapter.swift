@@ -24,23 +24,31 @@ struct AppleTerminalAdapter: TerminalAdapter {
     }
 
     func tabs() throws -> TerminalTabs {
-        let result = try runner("/usr/bin/osascript", ["-"], Self.switchTabsScript, 3)
+        let result = try runner("/usr/bin/osascript", ["-l", "JavaScript", "-"], Self.switchTabsScript, 3)
         guard result.code == 0 else { throw CCSError.message("Couldn’t read Terminal tabs. Check CCS’s Terminal Automation permission.") }
-        let parts = result.out.components(separatedBy: "\u{1e}")
-        let currentTTY = parts.first ?? ""
-        guard parts.count > 1 || result.out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        struct Inventory: Decodable {
+            struct Tab: Decodable {
+                struct Bounds: Decodable { let x, y, width, height: Double }
+                let tty: String
+                let title: String?
+                let bounds: Bounds?
+                let windowID: Int32?
+            }
+            let selectedTTY: String?
+            let tabs: [Tab]
+            let complete: Bool
+        }
+        guard let inventory = try? JSONDecoder().decode(Inventory.self, from: Data(result.out.utf8)) else {
             throw CCSError.message("Terminal returned an incomplete tab list. Refresh and try again.")
         }
-        let tabs = try parts.dropFirst().map { record -> TerminalTabSnapshot in
-            let fields = record.components(separatedBy: "\u{1f}")
-            let windowID = fields.count == 7 ? Int32(fields[6].trimmingCharacters(in: .whitespacesAndNewlines)) : nil
-            guard fields.count == 6 || windowID != nil,
-                  let tab = TerminalTabSnapshot(output: fields.prefix(6).joined(separator: "\n"), windowID: windowID) else {
-                throw CCSError.message("Terminal returned an unreadable tab. Refresh and try again.")
-            }
-            return tab
+        let tabs = inventory.tabs.compactMap { tab -> TerminalTabSnapshot? in
+            guard tab.tty.hasPrefix("/dev/tty"), !tab.tty.contains(where: \.isWhitespace) else { return nil }
+            let bounds = tab.bounds.map { CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) } ?? .zero
+            return TerminalTabSnapshot(terminalID: bundleID, paneID: tab.tty, tty: tab.tty, bounds: bounds,
+                                       title: cleanText(tab.title), windowID: tab.windowID)
         }
-        return TerminalTabs(tabs: tabs, selectedTTY: currentTTY)
+        return TerminalTabs(tabs: tabs, selectedTTY: inventory.selectedTTY,
+                            isComplete: inventory.complete && tabs.count == inventory.tabs.count)
     }
 
     func focus(paneID: String, title: String) throws {
@@ -105,22 +113,31 @@ struct AppleTerminalAdapter: TerminalAdapter {
     """
 
     public static let switchTabsScript = """
-    if application "Terminal" is not running then return ""
-    set fs to ASCII character 31
-    set rs to ASCII character 30
-    tell application "Terminal"
-      set output to ""
-      if (count of windows) is 0 then return ""
-      set output to tty of selected tab of front window
-      repeat with w in windows
-        set edges to bounds of w
-        set windowID to id of w
-        repeat with t in tabs of w
-          set output to output & rs & tty of t & fs & (item 1 of edges as text) & fs & (item 2 of edges as text) & fs & (item 3 of edges as text) & fs & (item 4 of edges as text) & fs & custom title of t & fs & windowID
-        end repeat
-      end repeat
-      return output
-    end tell
+    function run() {
+      const terminal = Application("com.apple.Terminal");
+      const inventory = {selectedTTY: null, tabs: [], complete: true};
+      if (!terminal.running()) return JSON.stringify(inventory);
+      const windows = terminal.windows();
+      // Selection and window geometry are hints. Neither determines whether a tab exists.
+      function optional(read) { try { return read(); } catch (_) { return null; } }
+      if (windows.length) inventory.selectedTTY = optional(() => windows[0].selectedTab.tty());
+      for (const window of windows) {
+        const id = optional(() => window.id());
+        const rectangle = optional(() => window.bounds());
+        const bounds = rectangle && [rectangle.x, rectangle.y, rectangle.width, rectangle.height].every(Number.isFinite)
+          ? rectangle : null;
+        const tabs = optional(() => window.tabs());
+        if (!tabs) { inventory.complete = false; continue; }
+        for (const tab of tabs) {
+          const tty = optional(() => tab.tty());
+          if (typeof tty !== "string" || !tty) { inventory.complete = false; continue; }
+          const title = optional(() => tab.customTitle());
+          inventory.tabs.push({tty, bounds, windowID: Number.isInteger(id) ? id | 0 : null,
+                               title: typeof title === "string" ? title : null});
+        }
+      }
+      return JSON.stringify(inventory);
+    }
     """
     // Keep cosmetic errors inside this handler: a successful focus or launch
     // must never become a failed action (or trigger a duplicate launch).

@@ -16,7 +16,7 @@ final class TerminalSwitchTests: XCTestCase {
         let service = SessionService(runner: { path, _, script, _ in
             if path == "/bin/ps" { return CommandResult(out: "123 1 ttys001 codex") }
             if path == "/usr/sbin/lsof" { return CommandResult(out: "n/tmp/work") }
-            if script == SessionService.switchTabsScript { return CommandResult(out: "\u{1e}/dev/ttys001\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}Topic") }
+            if script == SessionService.switchTabsScript { return CommandResult(out: terminalInventory([("/dev/ttys001", "Topic")])) }
             XCTAssertEqual(script, SessionService.focusScript, "Never launch another viewer for the matched conversation")
             focuses += 1
             return CommandResult(code: failedFocus ? 1 : 0, out: failedFocus ? "" : "ok")
@@ -49,7 +49,7 @@ final class TerminalSwitchTests: XCTestCase {
             if path == "/bin/ps" { return CommandResult(out: "123 1 ttys001 codex") }
             if path == "/usr/sbin/lsof" { return CommandResult(out: "n/tmp/work") }
             if script == SessionService.switchTabsScript {
-                return CommandResult(out: "\u{1e}/dev/ttys001\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}Topic")
+                return CommandResult(out: terminalInventory([("/dev/ttys001", "Topic")]))
             }
             XCTAssertEqual(script, SessionService.focusScript)
             focuses += 1; return CommandResult(out: "ok")
@@ -72,7 +72,7 @@ final class TerminalSwitchTests: XCTestCase {
             if path == "/usr/bin/env" { return CommandResult(out: "[{\"sessionId\":\"abc\",\"pid\":456}]") }
             if path == "/bin/ps" { return CommandResult(out: "123 1 ttys001 claude\n456 1 ttys002 claude") }
             XCTAssertEqual(script, SessionService.switchTabsScript, "The reused tty must not be focused")
-            return CommandResult(out: "\u{1e}/dev/ttys001\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}Old")
+            return CommandResult(out: terminalInventory([("/dev/ttys001", "Old")]))
         }, arguments: { _ in ["claude"] })
         let tab = TerminalTabSnapshot(output: "/dev/ttys001\n0\n0\n900\n600")!
         XCTAssertThrowsError(try service.focusTerminalTarget(TerminalSwitchTarget(session: session, tab: tab), sessions: [session]))
@@ -90,7 +90,7 @@ final class TerminalSwitchTests: XCTestCase {
             XCTAssertTrue(initialized, "The action service must initialize its own Codex provider before matching")
             if path == "/bin/ps" { return CommandResult(out: "123 1 ttys001 codex") }
             if path == "/usr/sbin/lsof" { return CommandResult(out: "p123\nn/tmp/work") }
-            if script == SessionService.switchTabsScript { return CommandResult(out: "\u{1e}/dev/ttys001\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}New topic") }
+            if script == SessionService.switchTabsScript { return CommandResult(out: terminalInventory([("/dev/ttys001", "New topic")])) }
             XCTAssertEqual(script, SessionService.focusScript)
             XCTAssertEqual(args, ["-", "New topic", "/dev/ttys001"])
             focused = true; return CommandResult(out: "ok")
@@ -107,7 +107,7 @@ final class TerminalSwitchTests: XCTestCase {
             if path == "/usr/bin/env" { return CommandResult(out: exists ? "[{\"sessionId\":\"abc\",\"pid\":123}]" : "[]") }
             if path == "/bin/ps" { processReads += 1; return CommandResult(out: exists ? "123 1 ttys001 claude" : "") }
             if script == SessionService.switchTabsScript {
-                return CommandResult(out: "/dev/ttys001\u{1e}/dev/ttys001\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}Quotes — café\u{1e}/dev/ttys002\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}Unknown")
+                return CommandResult(out: terminalInventory([("/dev/ttys001", "Quotes — café"), ("/dev/ttys002", "Unknown")], selected: "/dev/ttys001"))
             }
             XCTAssertEqual(script, SessionService.focusScript)
             XCTAssertEqual(args, ["-", "Quotes — café", "/dev/ttys001"])
@@ -130,7 +130,7 @@ final class TerminalSwitchTests: XCTestCase {
             if path == "/bin/ps" { return CommandResult(out: "\(pid) 1 ttys001 codex") }
             if path == "/usr/sbin/lsof" { return CommandResult(out: "n/tmp/work") }
             if script == SessionService.switchTabsScript {
-                return CommandResult(out: "/dev/ttys001\u{1e}/dev/ttys001\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}\(title)")
+                return CommandResult(out: terminalInventory([("/dev/ttys001", title)], selected: "/dev/ttys001"))
             }
             XCTAssertEqual(script, SessionService.focusScript)
             XCTAssertEqual(args, ["-", "", "/dev/ttys001"], "Unconfirmed focus must preserve the native title")
@@ -164,9 +164,7 @@ final class TerminalSwitchTests: XCTestCase {
             if path == "/bin/ps" { return CommandResult(out: "123 1 ttys001 codex\n124 1 ttys002 codex") }
             if path == "/usr/sbin/lsof" { return CommandResult(out: "n" + directory) }
             XCTAssertEqual(script, SessionService.switchTabsScript)
-            return CommandResult(out: "/dev/ttys002" + ["001", "002"].map {
-                "\u{1e}/dev/ttys\($0)\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}\(title)"
-            }.joined())
+            return CommandResult(out: terminalInventory([("/dev/ttys001", title), ("/dev/ttys002", title)], selected: "/dev/ttys002"))
         }, arguments: { _ in ["codex", "resume", "abc"] })
         var session = Session(id: "abc", cwd: "/tmp/work", title: "Topic", provider: .codex)
         session.status = "idle"
@@ -193,7 +191,7 @@ final class TerminalSwitchTests: XCTestCase {
             if path == "/bin/ps" { return CommandResult(out: "123 1 ttys001 codex") }
             if path == "/usr/sbin/lsof" { return CommandResult(out: "n/tmp/work") }
             XCTAssertEqual(script, SessionService.switchTabsScript)
-            return CommandResult(out: "\u{1e}/dev/ttys001\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}Topic")
+            return CommandResult(out: terminalInventory([("/dev/ttys001", "Topic")]))
         }, codex: CodexProvider(connector: { XCTFail("Tab enumeration must not connect to the provider"); throw CCSError.message("unexpected") }),
            arguments: { _ in ["codex", "--remote", "unix:///tmp/socket", "resume", "abc"] })
         XCTAssertEqual(try service.terminalSwitchContext(sessions: [session], codexSocketPath: "/tmp/socket").targets.first?.session?.key, session.key)
@@ -216,12 +214,39 @@ final class TerminalSwitchTests: XCTestCase {
         XCTAssertThrowsError(try service.selectedTerminalTTY())
     }
 
-    func testSwitchAppleScriptCompiles() throws {
+    func testPartialScanKeepsReadableClaudeViewerWithoutSelectedTabOrGeometry() throws {
+        let tty = "/dev/ttys005"
+        let output = terminalInventory([(tty, "Claude\u{1e} topic\u{1f}\nnext"), ("missing value", "")])
+        var focused = [String]()
+        let adapter = AppleTerminalAdapter { _, args, script, _ in
+            if script == SessionService.switchTabsScript { return CommandResult(out: output) }
+            XCTAssertEqual(script, SessionService.focusScript)
+            focused = args
+            return CommandResult(out: "ok")
+        }
+        let registry = TerminalRegistry(adapters: [adapter], isInstalled: { _ in true })
+        let inventory = try adapter.tabs()
+        XCTAssertFalse(inventory.isComplete)
+        XCTAssertNil(inventory.selectedTTY)
+        XCTAssertEqual(inventory.tabs.map(\.tty), [tty])
+        XCTAssertEqual(inventory.tabs.first?.title, "Claude topic next")
+        XCTAssertTrue(try registry.focusViewer(ttys: [tty], title: "Claude"))
+        XCTAssertEqual(focused, ["-", "Claude", tty])
+        XCTAssertThrowsError(try registry.focusViewer(ttys: ["/dev/ttys006"], title: "Missing"))
+    }
+
+    func testSwitchAutomationScriptsCompile() throws {
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".scpt")
         defer { try? FileManager.default.removeItem(at: path) }
-        for script in [SessionService.switchTabsScript, SessionService.selectedTTYScript] {
-            let result = try ProcessRunner().run("/usr/bin/osacompile", ["-o", path.path, "-"], input: script)
+        for (script, language) in [(SessionService.switchTabsScript, "JavaScript"), (SessionService.selectedTTYScript, "AppleScript")] {
+            let result = try ProcessRunner().run("/usr/bin/osacompile", ["-l", language, "-o", path.path, "-"], input: script)
             XCTAssertEqual(result.code, 0, result.err)
         }
     }
+}
+
+func terminalInventory(_ tabs: [(String, String)], selected: String? = nil, complete: Bool = true) -> String {
+    var payload: [String: Any] = ["complete": complete, "tabs": tabs.map { ["tty": $0.0, "title": $0.1] }]
+    payload["selectedTTY"] = selected
+    return String(decoding: try! JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
 }

@@ -18,10 +18,15 @@ Requires macOS 14 or later, Terminal.app, and at least one installed command,
 
 ## Install
 
-Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v1.3.3/CCS-1.3.3-macos-universal.dmg),
+Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v1.3.4/CCS-1.3.4-macos-universal.dmg),
 drag CCS into Applications, and open it. Choose **Install Command-Line Tool** in
 the CCS menu to install the terminal picker too. Both Apple Silicon and Intel
 executables are included.
+
+Starting with the 1.3.4 release, CCS checks for signed updates automatically.
+The CCS menu includes **Check for Updates…** and **Automatically Check for Updates**.
+If you have 1.3.3 or earlier, install an updater-enabled release once through the
+DMG or Homebrew. Updating the app also updates its bundled CLI.
 
 Or install both the app and CLI with Homebrew:
 

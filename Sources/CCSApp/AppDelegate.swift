@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var cliMenuItem: NSMenuItem?
     var newMenuItem: NSMenuItem?
     private let statusMenu = NSMenu()
+    private var updates: AppUpdates?
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         popup = Popup(engine: engine, settings: settings)
@@ -56,7 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sessionOverview.onBrowse = { [weak self] in self?.popup.show() }
         sessionOverview.onClose = { [weak self] in self?.terminalPopup.sessionOverviewClosed() }
         sessionOverview.onRefresh = { [weak self] in
-            guard let self else { return }; self.refreshSessionOverview(generation: self.sessionOverview.generation)
+            guard let self else { return }; self.refreshSessionOverview(generation: self.sessionOverview.generation, force: true)
         }
         popup.onSettings = { [weak self] in self?.showSettings() }
         preferences = Preferences(settings: settings, engine: engine, terminals: terminals)
@@ -90,6 +91,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         previousSessionKey.onPress = { [weak self] in self?.switchSession(step: -1) }
         let appMenu = NSMenu()
         appMenu.addItem(item("About CCS", #selector(about)))
+        updates = AppUpdates()
+        updates?.addItems(to: appMenu)
         appMenu.addItem(item("Settings…", #selector(showSettings), key: ","))
         appMenu.addItem(.separator()); appMenu.addItem(item("Quit CCS", #selector(quit), key: "q"))
         let main = NSMenu(), root = NSMenuItem(); root.submenu = appMenu; main.addItem(root)
@@ -106,6 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator()); menu.addItem(item("Settings…", #selector(showSettings)))
         cliMenuItem = item("Command-Line Tool…", #selector(installCLI)); menu.addItem(cliMenuItem!)
         menu.addItem(item("About CCS", #selector(about)))
+        updates?.addItems(to: menu)
         if Product.donationURL != nil { menu.addItem(item("Buy me a coffee", #selector(tip))) }
         menu.addItem(.separator()); menu.addItem(item("Quit CCS", #selector(quit), key: "q"))
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -227,8 +231,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         popup.hide(restoreFocus: false)
         return sessionOverview.show(anchor: anchor, cached: activity.recentSnapshot, finished: activity.finished)
     }
-    private func refreshSessionOverview(generation: Int) {
-        activity.refresh { [weak self] result in
+    private func refreshSessionOverview(generation: Int, force: Bool = false) {
+        activity.refresh(force: force) { [weak self] result in
             guard let self, self.sessionOverview.generation == generation, self.sessionOverview.isShown else { return }
             switch result {
             case .success(let snapshot):

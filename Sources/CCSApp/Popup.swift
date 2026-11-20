@@ -37,6 +37,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     }
     private var terminalTargets: [String: TerminalSwitchTarget]?
     private var terminalStatusCurrent = false
+    private var terminalInventoryComplete = false
     private var refreshError: String?
     private let loadHistory: (@escaping (Result<HistorySnapshot, Error>) -> Void) -> Void
     private var launching = false, issues = [Provider: String]()
@@ -266,6 +267,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
                 self.sessions = payload.sessions; self.issues = payload.issues
                 self.terminalTargets = payload.terminalTargets
                 self.terminalStatusCurrent = payload.terminalTargets != nil
+                self.terminalInventoryComplete = payload.terminalInventoryComplete
                 self.installedProviders = payload.installedProviders; self.hasLoaded = true
             case .failure(let error): self.refreshError = error.localizedDescription; self.terminalTargets = nil; self.terminalStatusCurrent = false
             }
@@ -470,7 +472,11 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { rows[row].session == nil ? 26 : 48 }
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { PickerRow() }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        if let s = rows[row].session { return SessionCell(session: s, recent: recent, terminalOpen: terminalStatusCurrent ? terminalTargets?[s.key] != nil : nil, unattended: finishedKeys.contains(s.key)) }
+        if let s = rows[row].session {
+            let matched = terminalTargets?[s.key] != nil
+            let known = terminalStatusCurrent && (matched || terminalInventoryComplete)
+            return SessionCell(session: s, recent: recent, terminalOpen: known ? matched : nil, unattended: finishedKeys.contains(s.key))
+        }
         let label = NSTextField(labelWithString: rows[row].label); label.font = .systemFont(ofSize: 11, weight: .semibold); label.textColor = .secondaryLabelColor; label.lineBreakMode = .byTruncatingMiddle
         return label
     }

@@ -141,6 +141,7 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
             resize()
         }
         statusText = fresh.isEmpty ? "No active Terminal sessions found." : pending == nil ? "Up to date" : "List changed · refresh to reorder"
+        if !snapshot.context.isComplete { statusText = "Some Terminal tabs could not be checked." }
         if !snapshot.unavailableProviders.isEmpty {
             statusText = snapshot.unavailableProviders.map(\.title).joined(separator: ", ") + " status unavailable; some sessions may be missing."
         }

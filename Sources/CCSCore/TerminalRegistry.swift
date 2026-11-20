@@ -3,15 +3,17 @@ import AppKit
 public struct TerminalTabs {
     public let tabs: [TerminalTabSnapshot]
     public let selectedTTY: String?
+    public let isComplete: Bool
 
-    public init(tabs: [TerminalTabSnapshot], selectedTTY: String?) {
+    public init(tabs: [TerminalTabSnapshot], selectedTTY: String?, isComplete: Bool = true) {
         self.tabs = tabs
         self.selectedTTY = selectedTTY
+        self.isComplete = isComplete
     }
 }
 
 /// Discovery reads must never start or activate the app. A stopped app returns an
-/// empty inventory. Throw on an incomplete read so it cannot authorize a duplicate launch.
+/// empty inventory. Mark partial inventories so a missing tab cannot authorize a duplicate launch.
 /// Each snapshot identifies its owner by bundle ID, its pane by native ID, and
 /// its local process by TTY. Bounds use global coordinates with a top-left origin.
 public protocol TerminalAdapter {
@@ -84,12 +86,16 @@ public struct TerminalRegistry {
     }
 
     func focusViewer(ttys: [String], title: String) throws -> Bool {
-        let tabs = try installed.flatMap { try $0.tabs().tabs }
+        let inventories = try installed.map { try $0.tabs() }
+        let tabs = inventories.flatMap(\.tabs)
         for tty in ttys {
             if let tab = tabs.first(where: { $0.tty == tty }) {
                 try focus(tab, title: title)
                 return true
             }
+        }
+        guard inventories.allSatisfy(\.isComplete) else {
+            throw CCSError.message("Some Terminal tabs could not be checked. Refresh before opening another viewer.")
         }
         return false
     }

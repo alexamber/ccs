@@ -32,6 +32,9 @@ notarize them. Do not present them as notarized public releases.
    repository or in chat.
 4. Confirm that `security find-identity -v -p codesigning` lists the Developer ID
    identity. Merely having a paid membership does not install the certificate.
+5. Use the CCS Sparkle signing key in the login Keychain under account
+   `io.github.alexamber.ccs`. Restore the existing key on a replacement signing
+   Mac. The release build checks its public half against `SUPublicEDKey`.
 
 See [Apple's Developer ID guidance](https://developer.apple.com/developer-id/)
 and [notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow).
@@ -50,7 +53,13 @@ The script builds both architectures, generates the icon, signs the nested CLI
 and app with hardened runtime and the Apple-events entitlement, submits the app
 to notarization, staples its ticket, builds and signs the DMG, and notarizes and
 staples the DMG. The ZIP contains the already-stapled app. SHA-256 checksums are
-written alongside the artifacts in `dist/`.
+written alongside the artifacts in `dist/`. Sparkle also signs the final ZIP and
+generates the signed `dist/appcast.xml` for the same build. Increment both the
+marketing version and the integer `CFBundleVersion` before each public release.
+
+With the signing identity still set, run `python3 scripts/check-update.py` to
+exercise the Sparkle installer on disposable copies. It uses a loopback feed,
+a temporary signing key and a separate bundle identifier.
 
 The release command fails if signing credentials or the notary profile are
 missing. Cask generation fails without a real release DMG and a valid stapled
@@ -69,7 +78,12 @@ Stripe SDK are included in the app.
    presses. Confirm launch-at-login behavior on an installed build.
 3. Inspect the signed artifacts and generated `Casks/ccs.rb`.
 4. Publish only after owner approval: create the matching versioned GitHub release,
-   upload the release DMG, ZIP and checksums, then publish the generated cask in
+   attach the release DMG, ZIP, checksum manifest and `appcast.xml` to the draft.
+   Match all four asset digests against the local files, then publish the draft
+   as the latest stable release. Verify that
+   `https://github.com/alexamber/ccs/releases/latest/download/appcast.xml` serves
+   the signed feed byte for byte and that its enclosure downloads the verified
+   ZIP. Keep prereleases out of the latest stable slot. Publish the generated cask in
    the tap. Set the version in `macOS/Info.plist`; both app and bundled CLI read
    it there. Match the Git tag and release notes to that version.
 

@@ -25,11 +25,15 @@ struct SessionUpdateTracker {
         var next = [String: SessionActivity](), updates = [SessionUpdate]()
         let targets = SessionActivity.sorted(snapshot.context.targets)
         let present = Set(targets.map(\.key))
-        finished.formIntersection(present)
-        turns = turns.filter { key, _ in
-            present.contains(key) || snapshot.unavailableProviders.contains { key.hasPrefix($0.rawValue + ":") }
+        if snapshot.context.isComplete {
+            finished.formIntersection(present)
+            turns = turns.filter { key, _ in
+                present.contains(key) || snapshot.unavailableProviders.contains { key.hasPrefix($0.rawValue + ":") }
+            }
+            attention = []
+        } else {
+            attention.subtract(present)
         }
-        attention = []
         for target in targets {
             let oldAttention = attentionStatus[target.key]
             let activity = SessionActivity(status: target.session?.status ?? "unknown")
@@ -68,7 +72,8 @@ struct SessionUpdateTracker {
             }
         }
         // Missing status during a provider outage must not replay old alerts on recovery.
-        for (key, value) in previous where snapshot.unavailableProviders.contains(where: { key.hasPrefix($0.rawValue + ":") }) && next[key] == nil {
+        for (key, value) in previous where next[key] == nil &&
+            (!snapshot.context.isComplete || snapshot.unavailableProviders.contains(where: { key.hasPrefix($0.rawValue + ":") })) {
             next[key] = value
         }
         inferredClaudeCompletions.formIntersection(next.keys)
@@ -133,10 +138,10 @@ final class SessionUpdateMonitor {
             return TerminalSwitchTarget(session: session, tab: target.tab, processID: target.processID)
         }
         return TerminalActivitySnapshot(context: TerminalSwitchContext(targets: targets, currentKey: snapshot.context.currentKey,
-            keysByTTY: snapshot.context.keysByTTY), unavailableProviders: snapshot.unavailableProviders)
+            keysByTTY: snapshot.context.keysByTTY, isComplete: snapshot.context.isComplete), unavailableProviders: snapshot.unavailableProviders)
     }
-    func refresh(completion: ((ResultType) -> Void)? = nil) {
-        if let completion, !loading, let cached, now().timeIntervalSince(cached.date) < 2 {
+    func refresh(force: Bool = false, completion: ((ResultType) -> Void)? = nil) {
+        if let completion, !force, !loading, let cached, cached.snapshot.context.isComplete, now().timeIntervalSince(cached.date) < 2 {
             completion(.success(cached.snapshot)); return
         }
         if let completion { completions.append(completion) }
@@ -175,7 +180,7 @@ final class SessionUpdateMonitor {
             return TerminalSwitchTarget(session: session, tab: target.tab, processID: target.processID)
         }
         return TerminalActivitySnapshot(context: TerminalSwitchContext(targets: targets, currentKey: loaded.context.currentKey,
-            keysByTTY: loaded.context.keysByTTY), unavailableProviders: loaded.unavailableProviders)
+            keysByTTY: loaded.context.keysByTTY, isComplete: loaded.context.isComplete), unavailableProviders: loaded.unavailableProviders)
     }
 
 }

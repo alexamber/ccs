@@ -13,9 +13,19 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.3.3</string>
+	<string>1.3.4</string>
 	<key>CFBundleVersion</key>
-	<string>15</string>
+	<string>16</string>
+	<key>SUPublicEDKey</key>
+	<string>Js50waWNVsYCyIKQ4BHW9ZgE3btYiIj8feSAYyfA5yI=</string>
+	<key>SUFeedURL</key>
+	<string>https://github.com/alexamber/ccs/releases/latest/download/appcast.xml</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SURequireSignedFeed</key>
+	<true/>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
 	<key>CFBundleIconFile</key>
 	<string>CCS</string>
 	<key>LSMinimumSystemVersion</key>

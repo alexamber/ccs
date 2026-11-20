@@ -134,7 +134,7 @@ public final class SessionService {
                 // A shared server keeps idle conversations loaded after their client exits.
                 // Reattach only after a successful tab scan, with no unidentified client
                 // that could already be displaying this conversation.
-                if current.status == "idle", !context.targets.contains(where: { $0.session == nil }) {
+                if current.status == "idle", context.isComplete, !context.targets.contains(where: { $0.session == nil }) {
                     try openTerminal(codex.resumeCommand(current), title: current.terminalTitle)
                     return
                 }

@@ -62,7 +62,9 @@ final class SessionActivityCoordinator {
         monitor.ingest(session)
     }
     func observe(_ key: String?) { notices.observe(key) }
-    func refresh(completion: @escaping (SessionUpdateMonitor.ResultType) -> Void) { monitor.refresh(completion: completion) }
+    func refresh(force: Bool = false, completion: @escaping (SessionUpdateMonitor.ResultType) -> Void) {
+        monitor.refresh(force: force, completion: completion)
+    }
     func tick() { notices.tick() }
 
     private func receive(_ snapshot: TerminalActivitySnapshot) {

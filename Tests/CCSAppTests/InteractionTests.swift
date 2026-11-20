@@ -23,7 +23,13 @@ final class InteractionTests: XCTestCase {
         snapshot = HistorySnapshot(sessions: [working], issues: [:], installedProviders: [.codex], terminalTargets: [session.key: target(session)])
         popup.refresh()
         XCTAssertEqual(try icon().contentTintColor, .systemYellow, "An open working session must not keep its idle green indicator")
+        snapshot.terminalInventoryComplete = false
+        popup.refresh()
+        XCTAssertEqual(try icon().contentTintColor, .systemYellow, "A partial scan still confirms a matched tab")
         snapshot.terminalTargets = [:]
+        popup.refresh()
+        XCTAssertEqual(try icon().toolTip, "Terminal status unavailable")
+        snapshot.terminalInventoryComplete = true
         popup.refresh()
         XCTAssertEqual(try icon().contentTintColor, .secondaryLabelColor)
         XCTAssertEqual(try icon().toolTip, "No confirmed Terminal tab")
@@ -112,7 +118,7 @@ final class InteractionTests: XCTestCase {
                 if path == "/usr/bin/env" { return CommandResult(out: "[{\"sessionId\":\"claude-session\",\"pid\":124,\"cwd\":\"/tmp/project\"}]") }
                 if path == "/bin/ps" { return CommandResult(out: "123 1 ttys001 codex\n124 1 ttys002 claude") }
                 XCTAssertEqual(script, SessionService.switchTabsScript, "Switching must not invoke provider history or live-status commands")
-                return CommandResult(out: "/dev/ttys001\u{1e}/dev/ttys001\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}Topic\u{1e}/dev/ttys002\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}Claude")
+                return CommandResult(out: #"{"selectedTTY":"/dev/ttys001","complete":true,"tabs":[{"tty":"/dev/ttys001","title":"Topic"},{"tty":"/dev/ttys002","title":"Claude"}]}"#)
             }, codex: CodexProvider(enabled: false), arguments: { [$0 == 123 ? "codex" : "claude"] })
         })
         let seeded = expectation(description: "metadata cached")

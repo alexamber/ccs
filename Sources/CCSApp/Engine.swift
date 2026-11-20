@@ -7,6 +7,7 @@ struct HistorySnapshot {
     let issues: [Provider: String]
     let installedProviders: [Provider]
     var terminalTargets: [String: TerminalSwitchTarget]? = nil
+    var terminalInventoryComplete = true
 }
 
 final class Engine {
@@ -47,7 +48,8 @@ final class Engine {
             let context = try? service.terminalSwitchContext(sessions: sessions, includeUnconfirmedCodex: false)
             return HistorySnapshot(sessions: sessions, issues: service.issues,
                                    installedProviders: enabled.filter { $0.isInstalled(environment: env) },
-                                   terminalTargets: context.map { Dictionary(uniqueKeysWithValues: $0.targets.map { ($0.key, $0) }) })
+                                   terminalTargets: context.map { Dictionary(uniqueKeysWithValues: $0.targets.map { ($0.key, $0) }) },
+                                   terminalInventoryComplete: context?.isComplete == true)
         }) { result in
             let callbacks = self.historyCompletions; self.historyCompletions = []
             callbacks.forEach { $0(result) }
@@ -72,7 +74,8 @@ final class Engine {
             }
             self.activitySessions = targets.compactMap(\.session)
             completion(.success(TerminalActivitySnapshot(context: TerminalSwitchContext(targets: targets,
-                currentKey: snapshot.context.currentKey, keysByTTY: snapshot.context.keysByTTY), unavailableProviders: snapshot.unavailableProviders)))
+                currentKey: snapshot.context.currentKey, keysByTTY: snapshot.context.keysByTTY,
+                isComplete: snapshot.context.isComplete), unavailableProviders: snapshot.unavailableProviders)))
         }
     }
     func rememberActivity(_ session: Session) {

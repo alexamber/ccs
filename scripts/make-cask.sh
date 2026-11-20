@@ -15,6 +15,7 @@ cask "ccs" do
   name "CCS"
   desc "Native macOS and terminal picker for Claude Code and Codex"
   homepage "https://github.com/alexamber/ccs"
+  auto_updates true
   depends_on macos: :sonoma
   app "CCS.app"
   binary "#{appdir}/CCS.app/Contents/MacOS/ccs"

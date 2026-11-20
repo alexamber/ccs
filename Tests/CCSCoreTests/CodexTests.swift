@@ -100,7 +100,7 @@ final class CodexTests: XCTestCase {
         var launched = 0
         let service = SessionService(runner: { path, args, script, _ in
             if path == "/bin/ps" { return CommandResult(out: "") }
-            if script == SessionService.switchTabsScript { return CommandResult(out: "") }
+            if script == SessionService.switchTabsScript { return CommandResult(out: terminalInventory([])) }
             XCTAssertEqual(script, SessionService.launchScript)
             if launched < 2 { XCTAssertTrue(args.last?.contains("resume 'abc'") == true) }
             launched += 1; return CommandResult(out: "ok")
@@ -121,7 +121,7 @@ final class CodexTests: XCTestCase {
 
     func testCodexReattachRefusesAmbiguousTabsActiveTurnsAndFailedScans() throws {
         var entry = record("abc", status: "idle")
-        var tabResult = CommandResult(out: "/dev/ttys001\u{1e}/dev/ttys001\u{1f}0\u{1f}0\u{1f}900\u{1f}600\u{1f}Renamed tab")
+        var tabResult = CommandResult(out: terminalInventory([("/dev/ttys001", "Renamed tab")], selected: "/dev/ttys001"))
         let client = MockCodexConnection { method, _ in
             method == "thread/list" ? ["data": [entry]] : ["thread": entry]
         }
@@ -134,11 +134,11 @@ final class CodexTests: XCTestCase {
         let session = try CodexProvider.session(entry, authoritative: true)
         XCTAssertThrowsError(try service.activate(session), "An unidentified client may already contain this conversation")
         for result in [CommandResult(code: 1, err: "Automation denied"), CommandResult(out: "incomplete"),
-                       CommandResult(out: "/dev/ttys001\u{1e}malformed")] {
+                       CommandResult(out: terminalInventory([], complete: false))] {
             tabResult = result
             XCTAssertThrowsError(try service.activate(session))
         }
-        tabResult = CommandResult(out: "")
+        tabResult = CommandResult(out: terminalInventory([]))
         for status in ["active", "waiting", "error"] {
             entry["status"] = ["type": status]
             XCTAssertThrowsError(try service.activate(session), "A non-idle conversation cannot implicitly resume")

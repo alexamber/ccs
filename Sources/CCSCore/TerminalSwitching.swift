@@ -19,7 +19,9 @@ public struct TerminalSwitchContext {
     public let targets: [TerminalSwitchTarget]
     public let currentKey: String?
     public let keysByTTY: [String: String]
-    public init(targets: [TerminalSwitchTarget], currentKey: String?, keysByTTY: [String: String]? = nil) {
+    public let isComplete: Bool
+    public init(targets: [TerminalSwitchTarget], currentKey: String?, keysByTTY: [String: String]? = nil, isComplete: Bool = true) {
+        self.isComplete = isComplete
         self.targets = targets; self.currentKey = currentKey
         self.keysByTTY = keysByTTY ?? Dictionary(targets.map { ($0.tab.tty, $0.key) }, uniquingKeysWith: { first, _ in first })
     }
@@ -42,16 +44,18 @@ extension SessionService {
                                       originTerminalID: String? = nil) throws -> TerminalSwitchContext {
         let adapters = terminals.installed
         var tabs = [TerminalTabSnapshot](), currentTTY: String?
+        var isComplete = true
         for adapter in adapters {
             let inventory = try adapter.tabs()
             tabs += inventory.tabs
+            isComplete = isComplete && inventory.isComplete
             if adapter.bundleID == originTerminalID || (originTerminalID == nil && adapters.count == 1) {
                 currentTTY = inventory.selectedTTY
             }
         }
         let live = sessions.filter(\.isLive)
         guard !tabs.isEmpty, !live.isEmpty || includeUnconfirmedCodex else {
-            return TerminalSwitchContext(targets: [], currentKey: nil)
+            return TerminalSwitchContext(targets: [], currentKey: nil, isComplete: isComplete)
         }
         let processes = try runner("/bin/ps", ["-axo", "pid=,ppid=,tty=,command="], nil, 5)
         guard processes.code == 0 else { throw CCSError.message("Couldn’t inspect running Terminal sessions.") }
@@ -66,7 +70,7 @@ extension SessionService {
             if tab.tty == currentTTY { currentKey = target.key }
             if seen.insert(target.key).inserted { targets.append(target) }
         }
-        return TerminalSwitchContext(targets: targets, currentKey: currentKey, keysByTTY: keysByTTY)
+        return TerminalSwitchContext(targets: targets, currentKey: currentKey, keysByTTY: keysByTTY, isComplete: isComplete)
     }
 
     /// Switching only focuses an existing, freshly matched tab. It never resumes
