@@ -13,29 +13,29 @@ final class InteractionTests: XCTestCase {
         session.status = "idle"
         var snapshot = HistorySnapshot(sessions: [session], issues: [:], installedProviders: [.codex], terminalTargets: [session.key: target(session)])
         let popup = Popup(engine: Engine(environment: { [:] }), settings: Settings(), loadHistory: { $0(.success(snapshot)) })
-        func icon() throws -> NSImageView {
+        func icon<T: NSView>(_ type: T.Type) throws -> T {
             let cell = try XCTUnwrap(popup.tableView(NSTableView(), viewFor: nil, row: 0))
-            return try XCTUnwrap(cell.subviews.compactMap { $0 as? NSImageView }.first)
+            return try XCTUnwrap(cell.subviews.compactMap { $0 as? T }.first)
         }
         popup.refresh()
-        XCTAssertEqual(try icon().contentTintColor, .systemGreen)
+        XCTAssertEqual(try icon(StatusDot.self).color, .systemGreen)
         var working = session; working.status = "active"
         snapshot = HistorySnapshot(sessions: [working], issues: [:], installedProviders: [.codex], terminalTargets: [session.key: target(session)])
         popup.refresh()
-        XCTAssertEqual(try icon().contentTintColor, .systemYellow, "An open working session must not keep its idle green indicator")
+        XCTAssertEqual(try icon(StatusDot.self).color, .systemYellow, "An open working session must not keep its idle green indicator")
         snapshot.terminalInventoryComplete = false
         popup.refresh()
-        XCTAssertEqual(try icon().contentTintColor, .systemYellow, "A partial scan still confirms a matched tab")
+        XCTAssertEqual(try icon(StatusDot.self).color, .systemYellow, "A partial scan still confirms a matched tab")
         snapshot.terminalTargets = [:]
         popup.refresh()
-        XCTAssertEqual(try icon().toolTip, "Terminal status unavailable")
+        XCTAssertEqual(try icon(NSImageView.self).toolTip, "Terminal status unavailable")
         snapshot.terminalInventoryComplete = true
         popup.refresh()
-        XCTAssertEqual(try icon().contentTintColor, .secondaryLabelColor)
-        XCTAssertEqual(try icon().toolTip, "No confirmed Terminal tab")
+        XCTAssertEqual(try icon(NSImageView.self).contentTintColor, .secondaryLabelColor)
+        XCTAssertEqual(try icon(NSImageView.self).toolTip, "No confirmed Terminal tab")
         snapshot.terminalTargets = nil
         popup.refresh()
-        XCTAssertEqual(try icon().toolTip, "Terminal status unavailable")
+        XCTAssertEqual(try icon(NSImageView.self).toolTip, "Terminal status unavailable")
         var old = session; old.mtime = 1
         snapshot = HistorySnapshot(sessions: [old], issues: [:], installedProviders: [.codex], terminalTargets: [:])
         popup.refresh()

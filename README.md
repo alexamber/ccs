@@ -18,7 +18,7 @@ Requires macOS 14 or later, Terminal.app, and at least one installed command,
 
 ## Install
 
-Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v1.3.4/CCS-1.3.4-macos-universal.dmg),
+Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v1.4.0/CCS-1.4.0-macos-universal.dmg),
 drag CCS into Applications, and open it. Choose **Install Command-Line Tool** in
 the CCS menu to install the terminal picker too. Both Apple Silicon and Intel
 executables are included.
@@ -114,7 +114,8 @@ running in the menu bar. It uses the existing Terminal Automation permission;
 Accessibility permission is not needed.
 
 Right-click the unicorn (or Control-click), from any app, for active Terminal sessions, ordered
-by **Needs attention**, **Working**, **Ready**, and **Status unavailable**, newest
+by **Needs attention or unread completion** (purple), **Draft** (ringed dot),
+**Working** (yellow), **Ready** (green), and **Status unavailable**, newest
 activity first within each group. Claude recency combines known history timestamps
 with observed live-state changes. Selecting a row validates and focuses its tab;
 it never starts a replacement session. Compact rows show colored status dots and
@@ -190,6 +191,12 @@ Recognized Codex clients with unconfirmed conversations appear as **Codex tab**.
 Selecting one focuses the existing client and preserves its title. CCS verifies
 the selected tab before focusing it. Option-Space opens the full picker with files.
 
+When the full picker or Active sessions list is visible, CCS checks the visible
+prompt area of confirmed Apple Terminal tabs. A thin ring in the activity dot’s color means the
+rendered prompt looks nonempty. Prompt suggestions and custom terminal layouts
+can affect detection. The helper returns tab matches and discards the screen
+text. Type **draft** in the Active sessions filter to find marked rows.
+
 ## Nearby reports and documents
 
 The native picker shows **Files in this folder** beside the selected session.
@@ -210,6 +217,21 @@ the selected file. ⌘F returns to the main search. Selecting another session
 restores its folder’s files and keeps the session query.
 Use ⌘R to refresh discovery. Document contents are not searched.
 
+The same query finds sessions that referenced a document. Type a partial path
+such as `reports/quarter`, a filename fragment such as `quarter`, or paste a
+local file URL. Ordinary session results appear first. Additional matching
+sessions appear below them across all dates for the selected providers. Each
+matching row shows the operation and path. Hover to see additional paths.
+Return on a session focuses or resumes the conversation. Right enters the file
+list, where Return opens the selected document.
+
+CCS reads saved Claude transcripts and Codex turn history on demand. It records
+successful file operations and path mentions, including references to files
+that have since moved or disappeared. Scripts that omit their output paths
+can leave no searchable evidence. The first search progressively checks history.
+Unchanged sessions reuse a local path-and-operation cache in
+`~/.cache/ccs/report-references-v1/`. The footer reports incomplete reads.
+
 Cross-folder discovery runs only during an explicit search, one folder at a time,
 and stops when the picker closes or its scope changes. Typing reuses discovered
 metadata. Existing protected-folder and scan limits still apply; skipped/limited
@@ -226,8 +248,7 @@ Discovery skips hidden folders, symlinks, app packages, common source/build/cach
 folders, and housekeeping files such as README and AGENTS. Scans are bounded and
 run only when a file list is requested or visible; the visible list refreshes
 about every five seconds. CCS reads file metadata, not document contents. Opening
-history is stored locally in `~/.cache/ccs/artifact-usage-v1.json`. This first version
-does not discover references outside the session folder.
+history is stored locally in `~/.cache/ccs/artifact-usage-v1.json`. Folder discovery stays within the session folder.
 
 Automatic discovery does not scan the home directory or its parent directories,
 privacy-protected folders (Desktop, Documents, Downloads, Library, Pictures, Music,

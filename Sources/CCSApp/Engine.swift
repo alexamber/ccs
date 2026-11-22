@@ -21,6 +21,7 @@ final class Engine {
     private let foreground = Lane("actions", qos: .userInitiated)
     private let background = Lane("history", qos: .utility)
     private let switchOrigin = Lane("switch-origin", qos: .userInitiated)
+    private let reports = Lane("report-history", qos: .utility)
     private let activity = Lane("activity", qos: .utility)
     private var activitySessions = [Session]()
     // Main-thread snapshots; provider connections remain confined to their lane.
@@ -78,6 +79,13 @@ final class Engine {
                 isComplete: snapshot.context.isComplete), unavailableProviders: snapshot.unavailableProviders)))
         }
     }
+    func loadReportReferences(_ session: Session, operation: Operation, completion: @escaping (Result<[ReportReference], Error>) -> Void) {
+        perform(on: reports, { service, _ in
+            if operation.isCancelled { throw CancellationError() }
+            return try service.reportReferences(for: session, cancelled: { operation.isCancelled })
+        }, completion: completion)
+    }
+
     func rememberActivity(_ session: Session) {
         activitySessions.removeAll { $0.key == session.key }; activitySessions.append(session)
     }

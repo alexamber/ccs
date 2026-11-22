@@ -26,6 +26,7 @@ public struct Session: Codable, Identifiable {
     public var live: LiveSession?
     // Runtime-only turn metadata; never persisted in history or CLI exports.
     public var activityTurn: SessionActivityTurn?
+    public var transcriptURL: URL?
     private var storedProvider: Provider?
     public var provider: Provider {
         get { storedProvider ?? .claude }

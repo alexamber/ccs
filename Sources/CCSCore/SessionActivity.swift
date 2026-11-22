@@ -45,11 +45,16 @@ public enum SessionActivity: Int, CaseIterable {
         default: return SessionActivity(status: session.status).title
         }
     }
-    public static func sorted(_ targets: [TerminalSwitchTarget]) -> [TerminalSwitchTarget] {
-        targets.sorted {
-            let a = SessionActivity(status: $0.session?.status ?? "unknown")
-            let b = SessionActivity(status: $1.session?.status ?? "unknown")
-            if a != b { return a.rawValue < b.rawValue }
+    public static func sorted(_ targets: [TerminalSwitchTarget], finished: Set<String> = [], drafts: Set<String> = []) -> [TerminalSwitchTarget] {
+        func priority(_ target: TerminalSwitchTarget) -> Int {
+            let activity = SessionActivity(status: target.session?.status ?? "unknown")
+            if activity == .attention || finished.contains(target.key) { return 0 }
+            if drafts.contains(target.key) { return 1 }
+            return activity.rawValue + 1
+        }
+        return targets.sorted {
+            let a = priority($0), b = priority($1)
+            if a != b { return a < b }
             let x = $0.session?.mtime ?? 0, y = $1.session?.mtime ?? 0
             return x == y ? $0.key < $1.key : x > y
         }

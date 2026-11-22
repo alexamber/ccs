@@ -180,6 +180,43 @@ final class ArtifactBrowserTests: XCTestCase {
         XCTAssertTrue(popup.handle(key(36, window: popup.panel)))
         XCTAssertEqual(opened, ["/old/report.html"]); XCTAssertFalse(popup.panel.isVisible)
     }
+    func testPartialPathAddsHistoricalSessionsWithoutReplacingOrdinaryResultsOrFileAction() throws {
+        _ = NSApplication.shared
+        let now = Date().timeIntervalSince1970
+        let current = Session(id: "a", cwd: "/work", mtime: now, title: "Quarterly planning")
+        let author = Session(id: "b", cwd: "/work", mtime: 1, title: "Prepared figures", provider: .codex)
+        let other = Session(id: "c", cwd: "/work", mtime: 1, title: "Unrelated")
+        let reference = ReportReference(path: "/work/reports/Quarterly.html", action: .created)
+        var reads = [String](), opened = [String]()
+        let file = SessionArtifact(url: URL(fileURLWithPath: reference.path), relativePath: "reports/Quarterly.html", modifiedAt: Date())
+        let browser = ArtifactBrowser(loader: { _, done in done(ArtifactSnapshot(files: [file])) },
+                                      opener: { opened.append($0.url.path); return true })
+        var settings = Settings()
+        settings.enabledProviders = [.claude, .codex]; settings.providerFilter = .all
+        let popup = Popup(engine: Engine(environment: { [:] }), settings: settings, loadHistory: {
+            $0(.success(HistorySnapshot(sessions: [current, author, other], issues: [:], installedProviders: [.claude, .codex])))
+        }, artifactBrowser: browser, reportLoader: { session, _, done in
+            reads.append(session.key); done(.success(session.key == author.key ? [reference] : []))
+        })
+        popup.show(); defer { popup.hide(restoreFocus: false) }
+        func fields(_ view: NSView) -> [NSSearchField] { (view as? NSSearchField).map { [$0] } ?? view.subviews.flatMap(fields) }
+        let search = try XCTUnwrap(fields(popup.panel.contentView!).first)
+        func query(_ q: String) {
+            search.stringValue = q
+            popup.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        }
+        query("quart"); settle(); settle()
+        XCTAssertEqual(popup.selected?.key, current.key)
+        popup.move(1); XCTAssertEqual(popup.selected?.key, author.key)
+        query("orts/QUART"); settle()
+        XCTAssertEqual(popup.selected?.key, author.key)
+        XCTAssertTrue(browser.isGlobalSearch)
+        XCTAssertEqual(browser.files.map(\.url.path), [reference.path])
+        XCTAssertEqual(reads.count, 3, "Editing the query must reuse indexed references")
+        browser.openSelected()
+        XCTAssertEqual(opened, [reference.path])
+    }
+
     func testGlobalSearchDiscardsLateResultsAfterReturningToFolderOrClosing() {
         _ = NSApplication.shared
         var requests = [(String, (ArtifactSnapshot) -> Void)]()

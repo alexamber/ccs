@@ -55,6 +55,35 @@ final class SessionOverviewTests: XCTestCase {
         menu.openRow(0)
         XCTAssertEqual(opened, ["codex:new"])
     }
+    func testPurpleThenDraftThenWorkingAndReadyWithLateDraftUpdates() {
+        _ = NSApplication.shared
+        var resolve: ((Set<String>) -> Void)?
+        let drafts = VisibleDrafts { _, done in resolve = done }
+        let bubble = TerminalSessionPopup(), menu = SessionOverview(drafts: drafts)
+        bubble.configureFloating(enabled: true, allSpaces: true)
+        defer { menu.close(); bubble.hide() }
+        let waiting = target("attention", status: "waiting", time: 1)
+        let finished = target("finished", status: "idle", time: 2)
+        let writing = target("writing", status: "idle", time: 3)
+        let busyDraft = target("busy-draft", time: 4)
+        let working = target("working", time: 7)
+        let ready = target("ready", status: "idle", time: 9)
+        let unknown = target("unknown", status: "unknown", time: 11)
+        let data = snapshot([ready, working, writing, finished, waiting, busyDraft, unknown])
+        let generation = menu.show(anchor: bubble.panel.contentView!, cached: data, finished: [finished.key])
+        resolve?([writing.key, busyDraft.key, waiting.key])
+        XCTAssertEqual(menu.visibleKeys, [finished, waiting, busyDraft, writing, working, ready, unknown].map(\.key))
+        menu.noteInteraction()
+        menu.supply(data, finished: [], generation: generation)
+        XCTAssertEqual(menu.visibleKeys.first, finished.key)
+        XCTAssertTrue(menu.hasPendingReorder)
+        menu.refreshList()
+        XCTAssertEqual(menu.visibleKeys, [waiting, busyDraft, writing, working, ready, finished, unknown].map(\.key))
+        menu.search.stringValue = "draft"
+        menu.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: menu.search))
+        XCTAssertEqual(menu.visibleKeys, [waiting, busyDraft, writing].map(\.key))
+    }
+
     func testUntouchedListAcceptsFreshOrderAndErrorsKeepRecentRows() {
         _ = NSApplication.shared
         let bubble = TerminalSessionPopup(), menu = SessionOverview()
@@ -71,7 +100,8 @@ final class SessionOverviewTests: XCTestCase {
     }
     func testCompactListShowsTwelveRowsAndKeepsAllOtherSessionsScrollable() throws {
         _ = NSApplication.shared
-        let bubble = TerminalSessionPopup(), menu = SessionOverview()
+        var finishScan: ((Set<String>) -> Void)?
+        let bubble = TerminalSessionPopup(), menu = SessionOverview(drafts: VisibleDrafts { _, done in finishScan = done })
         bubble.configureFloating(enabled: true, allSpaces: true)
         defer { menu.close(); bubble.hide() }
         let titles = ["Review authentication changes", "Prepare interview questions", "Improve architecture cheatsheet", "Write system design report", "Update project dashboard", "Investigate failing integration", "Review pricing proposal", "Prepare launch notes", "Research customer feedback", "Summarize design decisions", "Fix search indexing", "Polish session controls", "Explore caching options", "Organize project references", "Check deployment results", "Review onboarding flow"]
@@ -80,7 +110,21 @@ final class SessionOverviewTests: XCTestCase {
         }
         let generation = menu.show(anchor: bubble.panel.contentView!, cached: snapshot(values))
         menu.supply(snapshot(values), finished: [], generation: generation)
+        finishScan?([values[2].key, values[6].key])
         XCTAssertEqual(menu.visibleKeys.count, 16)
+        // Lay out actual delegate rows at the popup width. A stretching marker
+        // stack previously pushed shorter titles toward the right edge.
+        for index in 0..<5 {
+            let cell = try XCTUnwrap(menu.tableView(NSTableView(), viewFor: nil, row: index))
+            cell.frame = NSRect(x: 0, y: 0, width: 380, height: 32)
+            cell.layoutSubtreeIfNeeded()
+            let labels = try XCTUnwrap(cell.subviews.compactMap { $0 as? NSStackView }.first)
+            for field in labels.arrangedSubviews {
+                let frame = field.convert(field.bounds, to: cell)
+                XCTAssertEqual(frame.minX, 22, accuracy: 2)
+                XCTAssertGreaterThan(frame.width, 350)
+            }
+        }
         if NSScreen.main!.visibleFrame.height >= 588 { XCTAssertEqual(menu.visibleListHeight, 408) }
         if let directory = ProcessInfo.processInfo.environment["CCS_UI_ARTIFACT_DIR"] {
             try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)

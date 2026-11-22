@@ -70,7 +70,11 @@ public final class SessionIndex {
                     if requireComplete { throw CCSError.message("Saved transcript metadata is incomplete; folders were kept.") }
                 }
                 updated[file.path] = entry
-                if !entry.session.cwd.isEmpty { result[entry.session.id] = entry.session }
+                if !entry.session.cwd.isEmpty {
+                    var session = entry.session
+                    session.transcriptURL = file
+                    result[session.id] = session
+                }
             }
         }
         // Cache failure must not block browsing. Atomic replacement prevents partial JSON.

@@ -5,12 +5,17 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     let panel: PickerPanel
     let engine: Engine
     let artifactBrowser: ArtifactBrowser
+    private let drafts = VisibleDrafts()
+    private let reportSearch: ReportSearch
+    private var evidence = [String: [ReportReference]]()
     var settings: Settings
     var onSettings: (() -> Void)?
     var onSave: ((Settings) throws -> Void)?
     private let search = NSSearchField(), table = NSTableView(), scroll = NSScrollView()
     private let fileScope = NSButton(title: "Search files across sessions", target: nil, action: nil)
     private var searchingAllFolders = false
+    private var reportOnlyKeys = Set<String>()
+    private var explicitFolder = false
     private var artifactWidth: NSLayoutConstraint!
     private let views = NSSegmentedControl(labels: ["Recent", "Folders"], trackingMode: .selectOne, target: nil, action: nil)
     private let ranges = NSSegmentedControl(labels: ["1d", "3d", "7d", "30d", "All"], trackingMode: .selectOne, target: nil, action: nil)
@@ -46,13 +51,19 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     private var days: Int, recent: Bool
     init(engine: Engine, settings: Settings,
          loadHistory: ((@escaping (Result<HistorySnapshot, Error>) -> Void) -> Void)? = nil,
-         artifactBrowser: ArtifactBrowser? = nil) {
+         artifactBrowser: ArtifactBrowser? = nil, reportLoader: ReportSearch.Loader? = nil) {
         self.engine = engine; self.settings = settings
         self.artifactBrowser = artifactBrowser ?? ArtifactBrowser()
+        self.reportSearch = ReportSearch(load: reportLoader ?? engine.loadReportReferences)
         self.loadHistory = loadHistory ?? engine.loadHistory
         days = settings.defaultDays; recent = !settings.folders
         panel = PickerPanel(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 560), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         super.init()
+        drafts.onUpdate = { [weak self] in
+            guard let self else { return }
+            self.table.reloadData(forRowIndexes: IndexSet(self.rows.indices), columnIndexes: IndexSet(integer: 0))
+        }
+        reportSearch.onUpdate = { [weak self] in self?.reload() }
         panel.autorecalculatesKeyViewLoop = true
         panel.delegate = self; panel.isReleasedWhenClosed = false
         panel.level = .floating; panel.isFloatingPanel = true; panel.hidesOnDeactivate = false
@@ -227,7 +238,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         let wasActive = NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier
         shortcutsPopover?.close()
         panel.orderOut(nil); timer?.invalidate(); timer = nil
-        artifactBrowser.cancel()
+        artifactBrowser.cancel(); reportSearch.stop(); drafts.clear()
         if restoreFocus && wasActive {
             if let previousApplication { previousApplication.activate(options: []) }
             else { NSApp.hide(nil) }
@@ -271,6 +282,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
                 self.installedProviders = payload.installedProviders; self.hasLoaded = true
             case .failure(let error): self.refreshError = error.localizedDescription; self.terminalTargets = nil; self.terminalStatusCurrent = false
             }
+            if self.panel.isVisible { self.drafts.check(self.terminalTargets.map { Array($0.values) } ?? []) }
             // Finishing while hidden still warms the next opening.
             self.reload()
             if self.panel.isVisible { self.updateArtifacts(refresh: true) }
@@ -281,7 +293,30 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         defer { reloading = false; if panel.isVisible { updateArtifacts() } }
         let keep = selected?.key
         let cutoff = days == 0 ? 0 : Date().timeIntervalSince1970 - Double(days) * 86400
-        rows = sessionRows(sessions.filter { settings.enabledProviders.contains($0.provider) && settings.providerFilter.includes($0.provider) && ((terminalStatusCurrent && terminalTargets?[$0.key] != nil) || $0.mtime >= cutoff) }, query: search.stringValue, recent: recent, tree: false)
+        let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let scoped = sessions.filter { settings.enabledProviders.contains($0.provider) && settings.providerFilter.includes($0.provider) }
+        rows = sessionRows(scoped.filter { (terminalStatusCurrent && terminalTargets?[$0.key] != nil) || $0.mtime >= cutoff },
+                           query: search.stringValue, recent: recent, tree: false)
+        evidence.removeAll(keepingCapacity: true); reportOnlyKeys.removeAll(keepingCapacity: true)
+        if panel.isVisible, !query.isEmpty {
+            reportSearch.search(scoped)
+            let ordinary = Set(rows.compactMap { $0.session?.key })
+            var related = [(session: Session, action: ReportReference.Action)]()
+            for session in scoped {
+                let hits = reportSearch.matches(query, for: session)
+                guard let best = hits.first else { continue }
+                evidence[session.key] = hits
+                if !ordinary.contains(session.key) { related.append((session, best.action)) }
+            }
+            if !related.isEmpty {
+                reportOnlyKeys = Set(related.map { $0.session.key })
+                rows.append(SessionRow(label: "Sessions referencing matching files · all dates"))
+                related.sort {
+                    $0.action == $1.action ? $0.session.mtime > $1.session.mtime : $0.action.rawValue < $1.action.rawValue
+                }
+                rows += related.map { SessionRow(session: $0.session) }
+            }
+        } else { reportSearch.stop() }
         let sessionCount = rows.filter { $0.session != nil }.count
         table.reloadData(); count.stringValue = "\(sessionCount) \(sessionCount == 1 ? "session" : "sessions")"
         empty.isHidden = rows.contains { $0.session != nil }; empty.stringValue = search.stringValue.isEmpty ? "No sessions in this range" : "No sessions match"
@@ -293,6 +328,11 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         message.stringValue = warnings.isEmpty ? "Refreshes every 5 seconds · \(settings.hotkeyLabel) again starts a new \(settings.newProvider.title) session" : warnings.joined(separator: " · ")
         if let refreshError { message.stringValue = (hasLoaded ? "Showing previous results · " : "") + refreshError }
         else if loading, hasLoaded { message.stringValue = "Updating sessions… · " + message.stringValue }
+        if reportSearch.searching { message.stringValue = "Searching session file references… · " + message.stringValue }
+        else if reportSearch.failed > 0 { message.stringValue = "File references unavailable for \(reportSearch.failed) sessions · " + message.stringValue }
+        if hasLoaded, !query.isEmpty, sessionCount == 0 {
+            empty.stringValue = reportSearch.searching ? "Searching session file references…" : "No matching session reference found"
+        }
         message.toolTip = message.stringValue
         if let keep, let row = rows.firstIndex(where: { $0.session?.key == keep }) { select(row) }
         else if let row = rows.firstIndex(where: { $0.session != nil }) { select(row) }
@@ -300,8 +340,8 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     private func updateArtifacts(refresh: Bool = false) {
         let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         fileScope.isHidden = query.isEmpty || selected == nil
-        fileScope.title = searchingAllFolders ? "Show session files" : "Search files across sessions"
-        let globalSearch = !query.isEmpty && (selected == nil || searchingAllFolders)
+        let globalSearch = !query.isEmpty && (selected == nil || searchingAllFolders || (selected.map { reportOnlyKeys.contains($0.key) } == true && !explicitFolder))
+        fileScope.title = globalSearch ? "Show session files" : "Search files across sessions"
         artifactWidth.constant = min(globalSearch ? 420 : 320, max(240, panel.frame.width - 503))
         if !globalSearch { artifactBrowser.show(folder: selected?.cwd, refresh: refresh) }
         else {
@@ -351,7 +391,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         case 18 where command: selectFilter(.all)
         case 19 where command: selectFilter(.claude)
         case 20 where command: selectFilter(.codex)
-        case 15 where command: artifactBrowser.invalidateSearch(); refresh()
+        case 15 where command: reportSearch.stop(); artifactBrowser.invalidateSearch(); refresh()
         case 3 where command: panel.makeFirstResponder(search); search.selectText(nil)
         case 43 where command: settingsClicked()
         case 44 where command: showShortcuts()
@@ -360,11 +400,12 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         return true
     }
     @objc func toggleFileScope() {
-        searchingAllFolders.toggle()
+        searchingAllFolders = !artifactBrowser.isGlobalSearch
+        explicitFolder = !searchingAllFolders
         updateArtifacts()
         panel.makeFirstResponder(search)
     }
-    func controlTextDidChange(_ obj: Notification) { searchingAllFolders = false; reload() }
+    func controlTextDidChange(_ obj: Notification) { searchingAllFolders = false; explicitFolder = false; reload() }
     @objc func changeView() { recent = views.selectedSegment == 0; reload() }
     @objc func changeRange() { days = dateWindows[ranges.selectedSegment]; reload() }
     @objc private func changeProvider() { selectFilter(ProviderFilter.allCases[providers.selectedSegment]) }
@@ -465,7 +506,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
     func tableViewSelectionDidChange(_ notification: Notification) {
-        if !reloading, panel.isVisible { searchingAllFolders = false; updateArtifacts() }
+        if !reloading, panel.isVisible { searchingAllFolders = false; explicitFolder = false; updateArtifacts() }
     }
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { rows[row].session != nil }
     func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { rows[row].session == nil }
@@ -475,7 +516,7 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
         if let s = rows[row].session {
             let matched = terminalTargets?[s.key] != nil
             let known = terminalStatusCurrent && (matched || terminalInventoryComplete)
-            return SessionCell(session: s, recent: recent, terminalOpen: known ? matched : nil, unattended: finishedKeys.contains(s.key))
+            return SessionCell(session: s, recent: recent, terminalOpen: known ? matched : nil, unattended: finishedKeys.contains(s.key), references: evidence[s.key] ?? [], possibleDraft: known && matched && drafts.keys.contains(s.key))
         }
         let label = NSTextField(labelWithString: rows[row].label); label.font = .systemFont(ofSize: 11, weight: .semibold); label.textColor = .secondaryLabelColor; label.lineBreakMode = .byTruncatingMiddle
         return label

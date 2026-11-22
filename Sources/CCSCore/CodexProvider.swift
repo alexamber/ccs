@@ -96,6 +96,26 @@ public final class CodexProvider {
             return session
         } catch { invalidate(); throw error }
     }
+    func reportReferences(for session: Session, cancelled: () -> Bool) throws -> [ReportReference] {
+        var refs = ReportReferences(), seen = Set<String>(), cursor: String?
+        let client = try client()
+        repeat {
+            if cancelled() { throw CancellationError() }
+            var params: [String: Any] = ["threadId": session.id, "limit": 1, "itemsView": "full"]
+            if let cursor { params["cursor"] = cursor }
+            let page: [String: Any]
+            do { page = try client.request("thread/turns/list", params) }
+            catch { invalidate(); throw error }
+            guard let turns = page["data"] as? [[String: Any]] else { throw CCSError.message("Invalid turn history.") }
+            for turn in turns {
+                guard let items = turn["items"] as? [[String: Any]] else { throw CCSError.message("Missing turn items.") }
+                for item in items { refs.codex(item, cwd: session.cwd) }
+            }
+            cursor = page["nextCursor"] as? String
+            if let cursor, !seen.insert(cursor).inserted { throw CCSError.message("Repeated turn cursor.") }
+        } while cursor != nil
+        return refs.files
+    }
     /// Only loaded threads. The latest turn's status catches short tasks between
     /// samples; itemsView:notLoaded excludes messages and tool payloads.
     func loadedSessions(includeTurns: Bool = true) throws -> [Session] {

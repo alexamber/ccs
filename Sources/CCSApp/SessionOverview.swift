@@ -4,16 +4,6 @@ import CCSCore
 /// Opens immediately from recent state. Fresh status can replace an untouched
 /// list; once navigation starts, rows stay under the same pointer/selection.
 final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
-    private final class StatusDot: NSView {
-        let color: NSColor
-        init(color: NSColor) { self.color = color; super.init(frame: .zero); setAccessibilityElement(false) }
-        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-        override var allowsVibrancy: Bool { false }
-        override func hitTest(_ point: NSPoint) -> NSView? { nil }
-        override func draw(_ dirtyRect: NSRect) {
-            color.setFill(); NSBezierPath(ovalIn: bounds.insetBy(dx: 0.5, dy: 0.5)).fill()
-        }
-    }
     private final class Table: NSTableView {
         var onOpen: (() -> Void)?, onClose: (() -> Void)?, onInteract: (() -> Void)?, onSearch: (() -> Void)?
         private var pointerArea: NSTrackingArea?
@@ -43,6 +33,8 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
     private let refreshButton = NSButton()
     private var allTargets = [TerminalSwitchTarget](), targets = [TerminalSwitchTarget](), available = Set<String>(), finished = Set<String>()
     private var pending: TerminalActivitySnapshot?
+    private let drafts: VisibleDrafts
+    private var latest: TerminalActivitySnapshot?
     private enum SwitchOrigin {
         case pending, tty(String?), selection(String?)
     }
@@ -66,8 +58,13 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
     var hasPendingReorder: Bool { pending != nil }
     var selectableKeys: Set<String> { available }
 
-    override init() {
+    init(drafts: VisibleDrafts = VisibleDrafts()) {
+        self.drafts = drafts
         super.init()
+        drafts.onUpdate = { [weak self] in
+            guard let self, self.isShown, let latest = self.latest else { return }
+            self.updateList(latest)
+        }
         popover.behavior = .transient; popover.animates = false; popover.delegate = self
         let controller = NSViewController(); controller.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 120))
         popover.contentViewController = controller
@@ -88,7 +85,7 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
             guard let self else { return }
             self.popover.contentViewController?.view.window?.makeFirstResponder(self.search)
         }
-        table.setAccessibilityLabel("Active sessions, attention first, then working, then ready")
+        table.setAccessibilityLabel("Active sessions, attention and unread completions first, then drafts, working, ready, and unavailable")
         scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.drawsBackground = false
         listHeight = scroll.heightAnchor.constraint(equalToConstant: 0); listHeight.isActive = true
         let browse = NSButton(title: "All sessions…", target: self, action: #selector(browse))
@@ -113,7 +110,11 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
         generation += 1; interacted = false; pending = nil; allTargets = []; targets = []; available = []; self.finished = finished
         search.stringValue = ""
         maximumListHeight = min(408, max(102, (anchor.window?.screen?.visibleFrame.height ?? 700) - 210))
-        if let cached { replaceList(cached) }
+        latest = cached
+        if let cached {
+            drafts.check(cached.context.targets)
+            replaceList(sorted(cached))
+        }
         else { table.reloadData(); heading.stringValue = "Active sessions" }
         statusText = cached == nil ? "Checking active sessions…" : "Recent sessions · updating…"
         updateMessage()
@@ -128,8 +129,16 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
     func supply(_ snapshot: TerminalActivitySnapshot, finished: Set<String>, generation: Int) {
         guard isShown, self.generation == generation else { return }
         self.finished = finished
+        latest = snapshot
+        drafts.check(snapshot.context.targets)
         keysByTTY = snapshot.context.keysByTTY
-        let fresh = SessionActivity.sorted(snapshot.context.targets)
+        updateList(snapshot)
+    }
+    private func sorted(_ snapshot: TerminalActivitySnapshot) -> [TerminalSwitchTarget] {
+        SessionActivity.sorted(snapshot.context.targets, finished: finished, drafts: drafts.keys)
+    }
+    private func updateList(_ snapshot: TerminalActivitySnapshot) {
+        let fresh = sorted(snapshot)
         if interacted, !allTargets.isEmpty {
             let byKey = Dictionary(fresh.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
             available = Set(byKey.keys)
@@ -137,8 +146,7 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
             allTargets = allTargets.map { byKey[$0.key] ?? $0 }
             applyFilter()
         } else {
-            replaceList(snapshot)
-            resize()
+            replaceList(fresh)
         }
         statusText = fresh.isEmpty ? "No active Terminal sessions found." : pending == nil ? "Up to date" : "List changed · refresh to reorder"
         if !snapshot.context.isComplete { statusText = "Some Terminal tabs could not be checked." }
@@ -149,8 +157,8 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
         refreshButton.contentTintColor = pending == nil ? .secondaryLabelColor : .controlAccentColor
         resolveSwitch()
     }
-    private func replaceList(_ snapshot: TerminalActivitySnapshot) {
-        allTargets = SessionActivity.sorted(snapshot.context.targets)
+    private func replaceList(_ sorted: [TerminalSwitchTarget]) {
+        allTargets = sorted
         available = Set(allTargets.map(\.key)); pending = nil
         applyFilter()
     }
@@ -160,6 +168,7 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
         targets = allTargets.filter { target in
             let status = finished.contains(target.key) ? "Finished" : SessionActivity.description(for: target.session)
             let text = [target.title, target.subtitle, target.session?.cwd ?? "", target.session?.status ?? "", status,
+                        available.contains(target.key) && drafts.keys.contains(target.key) ? "draft" : "",
                         SessionActivity(status: target.session?.status ?? "unknown").title].joined(separator: " ")
             return terms.allSatisfy { text.localizedStandardContains($0) }
         }
@@ -200,7 +209,7 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
         message.toolTip = error.localizedDescription
     }
     func close() { endSwitch(); popover.performClose(nil) }
-    func popoverDidClose(_ notification: Notification) { endSwitch(); generation += 1; onClose?() }
+    func popoverDidClose(_ notification: Notification) { drafts.clear(); endSwitch(); generation += 1; onClose?() }
 
     func beginSwitch(step: Int, fromSelection: Bool = false, previous: NSRunningApplication? = nil,
                      optionHeld: @escaping () -> Bool = { NSEvent.modifierFlags.contains(.option) }) {
@@ -297,23 +306,28 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
         let name = NSTextField(labelWithString: target.title); name.font = .systemFont(ofSize: 12, weight: .medium)
         name.textColor = enabled ? .labelColor : .secondaryLabelColor
         let status = !enabled ? "No longer confirmed" : finished.contains(target.key) ? "Finished" : SessionActivity.description(for: target.session)
+        let hasDraft = enabled && drafts.keys.contains(target.key)
         let detail = NSTextField(labelWithString: status + " · " + target.subtitle)
         detail.font = .systemFont(ofSize: 10); detail.textColor = .secondaryLabelColor
-        let dot = StatusDot(color: activity.tint(unattended: finished.contains(target.key)))
+        let dot = StatusDot(color: enabled && finished.contains(target.key) ? .systemPurple : activity.tint(unattended: false), hasDraft: hasDraft)
         dot.translatesAutoresizingMaskIntoConstraints = false
-        dot.widthAnchor.constraint(equalToConstant: 7).isActive = true; dot.heightAnchor.constraint(equalToConstant: 7).isActive = true
+        dot.widthAnchor.constraint(equalToConstant: 12).isActive = true; dot.heightAnchor.constraint(equalToConstant: 12).isActive = true
         let text = NSStackView(views: [name, detail]); text.orientation = .vertical; text.alignment = .leading; text.spacing = 0
         let view = NSView(); text.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(dot); view.addSubview(text)
-        NSLayoutConstraint.activate([dot.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 3), dot.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            text.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 7), text.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -4),
-            text.centerYAnchor.constraint(equalTo: view.centerYAnchor)])
+        NSLayoutConstraint.activate([
+            dot.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 3),
+            dot.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            text.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 7),
+            text.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -4),
+            text.centerYAnchor.constraint(equalTo: view.centerYAnchor)
+        ])
         for label in [name, detail] {
             label.lineBreakMode = .byTruncatingMiddle; label.widthAnchor.constraint(equalTo: text.widthAnchor).isActive = true
             label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         }
-        view.toolTip = target.title + "\n" + status + "\n" + target.subtitle
-        view.setAccessibilityLabel(target.title + ", " + detail.stringValue)
+        view.toolTip = target.title + "\n" + status + (hasDraft ? " · Likely unsent input" : "") + "\n" + target.subtitle
+        view.setAccessibilityLabel(target.title + (hasDraft ? ", Draft, likely unsent input, " : ", ") + detail.stringValue)
         return view
     }
 }

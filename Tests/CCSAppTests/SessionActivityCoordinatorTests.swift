@@ -140,7 +140,7 @@ final class SessionActivityCoordinatorTests: XCTestCase {
         func indicator() throws -> NSColor? {
             let cell = SessionCell(session: session, recent: false, terminalOpen: true,
                                    unattended: activity.finished.contains(session.key))
-            return try XCTUnwrap(cell.subviews.compactMap { $0 as? NSImageView }.first).contentTintColor
+            return try XCTUnwrap(cell.subviews.compactMap { $0 as? StatusDot }.first).color
         }
         XCTAssertEqual(try indicator(), .systemPurple)
         activity.observe(session.key)

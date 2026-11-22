@@ -24,6 +24,9 @@ swift build "${args[@]}" --product ccs
 bin=$(swift build "${args[@]}" --show-bin-path)
 sparkle="$PWD/.build/artifacts/sparkle/Sparkle"
 app="$PWD/build/CCS.app"
+if [ "$mode" = --development ] && [ "$app_only" = --app-only ]; then
+    app="${CCS_DEVELOPMENT_APP_PATH:-$app}"
+fi
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Frameworks" "$PWD/dist" "$PWD/.build/module-cache"
 install -m 755 "$bin/CCSApp" "$app/Contents/MacOS/CCSApp"
 install -m 755 "$bin/ccs" "$app/Contents/MacOS/ccs"
@@ -60,7 +63,7 @@ else
     fi
 fi
 cp LICENSE "$app/Contents/Resources/LICENSE"
-cp Sources/CCSApp/Resources/{Unicorn.png,UnicornTemplate.png,Firefly.png,Grasshopper.caf} "$app/Contents/Resources/"
+cp Sources/CCSApp/Resources/{Unicorn.png,UnicornTemplate.png,Firefly.png,Grasshopper.caf,VisibleDraft.js} "$app/Contents/Resources/"
 if [ -n "${CCS_DONATION_URL:-}" ]; then
     case "$CCS_DONATION_URL" in https://*) ;; *) printf 'CCS_DONATION_URL must use HTTPS.\n' >&2; exit 2 ;; esac
     /usr/bin/plutil -insert CCSDonationURL -string "$CCS_DONATION_URL" "$app/Contents/Info.plist"

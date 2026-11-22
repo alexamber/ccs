@@ -26,7 +26,7 @@ public final class ArtifactIndex {
     private let home: String
     private var usage: [String: Usage]
     private let fm = FileManager.default
-    private static let types = Set(["html", "htm", "pdf", "md", "markdown", "txt", "rtf", "docx", "pptx", "xlsx", "csv"])
+    static let types = Set(["html", "htm", "pdf", "md", "markdown", "txt", "rtf", "docx", "pptx", "xlsx", "csv"])
     private static let ignoredDirectories = Set(["node_modules", "vendor", "build", "dist", "target", "venv", "env", "__pycache__", "src", "sources", "tests", "test", "bin", "obj", "packages", "assets", "coverage"])
     private static let housekeeping = Set(["readme", "agents", "skill", "license", "licence", "changelog", "contributing", "code_of_conduct", "security", "package-lock"])
     private static let protectedNames = Set(["desktop", "documents", "downloads", "library", "movies", "music", "pictures"])
