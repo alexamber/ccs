@@ -218,9 +218,11 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
     }
     private var morph: Morph?, morphRevision = 0
     private var cornerRadius: CGFloat = 19
-    private var needsFileFocus = false
+    let filePopover = UnicornMenu()
     enum Phase { case title, collapsed, expanded }
-    private(set) var phase: Phase = .collapsed
+    private var launcherPhase: Phase = .collapsed
+    var phase: Phase { launcherPhase }
+    private var displayedMenu: UnicornMenu?
     let panel: NSPanel
     let artifactBrowser: ArtifactBrowser
     private let surface = Surface(frame: .zero)
@@ -232,12 +234,10 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
     private let bubble = BubbleButton(title: "", target: nil, action: nil)
     private let mark = BubbleButton(image: BrandIcon.image(size: 36), target: nil, action: nil)
     private let stack = NSStackView()
-    private var expandedConstraints = [NSLayoutConstraint]()
     private var bubbleConstraints = [NSLayoutConstraint](), introConstraints = [NSLayoutConstraint]()
     private var surfaceWidth: NSLayoutConstraint!, surfaceHeight: NSLayoutConstraint!
     private var markTop: NSLayoutConstraint!, markTrailing: NSLayoutConstraint!
     private var markWidth: NSLayoutConstraint!, indicatorLeading: NSLayoutConstraint!, indicatorBottom: NSLayoutConstraint!
-    private var headingClearance: NSLayoutConstraint!, headingHeight: NSLayoutConstraint!
     private var iconSize = UnicornSize.medium
     private var compactSide: CGFloat { 56 * iconSize.scale }
     private var markInset: CGFloat { 7 * iconSize.scale }
@@ -263,12 +263,16 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
     private var lastNotificationID: UUID?
     private var terminalContextActive = false
     let updateIndicator: NSImageView = UpdateIndicator()
+    private let lookupBadge = UpdateIndicator()
+    private var clearLookupBadge: DispatchWorkItem?
+    private var lookupHelp: String?
+    private var updateHelp = "Right-click for active sessions."
     private var drag = BubbleDrag()
-    private var interruptedTransition = false
     private let saveAnchor: (NSPoint) -> Void
     private var placement: NSPoint?
     private var screenObserver: NSObjectProtocol?
     var onBrowseFiles: ((Session) -> Void)?
+    var onChromeReport: ((NSView) -> Void)?
     var onShowSessions: ((NSView) -> Void)?
     var onNotificationOpen: ((TerminalSwitchTarget) -> Void)?
     var onNotificationHover: ((Bool) -> Void)?
@@ -285,8 +289,8 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         speech.onHover = { [weak self] value in self?.onNotificationHover?(value) }
         speech.onOpen = { [weak self] update in self?.onNotificationOpen?(update.target) }
         folderButton.onOpened = { [weak self] in self?.collapse(restoreFocus: false) }
+        (panel as? Panel)?.onCancel = { [weak self] in self?.displayedMenu?.close() }
         panel.delegate = self; panel.isReleasedWhenClosed = false; panel.isFloatingPanel = true
-        (panel as? Panel)?.onCancel = { [weak self] in self?.collapse() }
         panel.hidesOnDeactivate = false; panel.level = .floating
         panel.collectionBehavior = [.fullScreenAuxiliary, .transient]
         panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = true
@@ -316,19 +320,15 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         title.cell?.wraps = true; title.cell?.usesSingleLineMode = false
         path.font = .systemFont(ofSize: 11); path.textColor = .secondaryLabelColor; path.lineBreakMode = .byTruncatingMiddle
         detail.font = .systemFont(ofSize: 10); detail.textColor = .secondaryLabelColor
-        let close = NSButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: "Hide CCS bubble")!, target: self, action: #selector(closeCard))
-        close.isBordered = false; close.contentTintColor = .secondaryLabelColor
-        close.toolTip = "Hide bubble"
         let heading = NSView()
-        for view in [title, close] { view.translatesAutoresizingMaskIntoConstraints = false; heading.addSubview(view) }
-        headingClearance = close.trailingAnchor.constraint(equalTo: heading.trailingAnchor, constant: -44)
-        headingHeight = heading.heightAnchor.constraint(greaterThanOrEqualToConstant: 32)
+        title.translatesAutoresizingMaskIntoConstraints = false
+        heading.addSubview(title)
         NSLayoutConstraint.activate([
-            title.leadingAnchor.constraint(equalTo: heading.leadingAnchor), title.topAnchor.constraint(equalTo: heading.topAnchor),
-            title.bottomAnchor.constraint(equalTo: heading.bottomAnchor),
-            title.trailingAnchor.constraint(equalTo: close.leadingAnchor, constant: -8),
-            headingClearance, headingHeight,
-            close.topAnchor.constraint(equalTo: heading.topAnchor), close.widthAnchor.constraint(equalToConstant: 20), close.heightAnchor.constraint(equalToConstant: 20),
+            title.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
+            title.trailingAnchor.constraint(equalTo: heading.trailingAnchor, constant: -UnicornMenu.headerClearance),
+            title.centerYAnchor.constraint(equalTo: heading.centerYAnchor),
+            heading.heightAnchor.constraint(greaterThanOrEqualTo: title.heightAnchor),
+            heading.heightAnchor.constraint(greaterThanOrEqualToConstant: UnicornMenu.headerIconSize),
         ])
         let metadata = NSView()
         for view in [path, folderButton, detail] { view.translatesAutoresizingMaskIntoConstraints = false; metadata.addSubview(view) }
@@ -347,13 +347,14 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         picker.isBordered = false; picker.font = .systemFont(ofSize: 11); picker.alignment = .right
         for view in [heading, metadata, divider, self.artifactBrowser, picker] { stack.addArrangedSubview(view) }
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 8
-        stack.translatesAutoresizingMaskIntoConstraints = false; surface.addSubview(stack)
-        expandedConstraints = [
-            stack.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -16),
-            stack.topAnchor.constraint(equalTo: surface.topAnchor, constant: 16),
-            stack.bottomAnchor.constraint(equalTo: surface.bottomAnchor, constant: -16),
-        ]
+        let controller = NSViewController()
+        controller.view = NSView(frame: NSRect(x: 0, y: 0, width: 368, height: 200))
+        filePopover.contentViewController = controller; filePopover.onClose = { [weak self] in self?.stopLoading(); self?.hovering = false; self?.previousApplication = nil }
+        stack.translatesAutoresizingMaskIntoConstraints = false; controller.view.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: controller.view.leadingAnchor, constant: 10),
+            stack.topAnchor.constraint(equalTo: controller.view.topAnchor, constant: 10),
+        ])
         for view in stack.arrangedSubviews {
             view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
@@ -363,11 +364,10 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         self.artifactBrowser.onBack = { [weak self] in self?.collapse() }
         self.artifactBrowser.onLoaded = { [weak self] _ in
             guard let self, self.phase == .expanded, self.panel.isVisible else { return }
-            self.setPhase(.expanded)
+            self.resizeFiles()
         }
         mark.isBordered = false; mark.imageScaling = .scaleProportionallyUpOrDown
         mark.target = self; mark.action = #selector(toggleExpansion)
-        mark.setAccessibilityLabel("CCS session files. Hover for name; click for files.")
         mark.translatesAutoresizingMaskIntoConstraints = false; surface.addSubview(mark)
         mark.wantsLayer = true
         for button in [intro, bubble, mark] { button.onContextMenu = { [weak self] in self?.showSessions() } }
@@ -391,6 +391,17 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         updateIndicator.imageScaling = .scaleProportionallyUpOrDown
         updateIndicator.isHidden = true; updateIndicator.translatesAutoresizingMaskIntoConstraints = false
         updateIndicator.setAccessibilityElement(false); surface.addSubview(updateIndicator)
+        lookupBadge.imageScaling = .scaleProportionallyUpOrDown
+        lookupBadge.isHidden = true; lookupBadge.translatesAutoresizingMaskIntoConstraints = false
+        lookupBadge.setAccessibilityElement(false)
+        lookupBadge.wantsLayer = true
+        surface.addSubview(lookupBadge)
+        NSLayoutConstraint.activate([
+            lookupBadge.centerXAnchor.constraint(equalTo: mark.leadingAnchor, constant: 1),
+            lookupBadge.centerYAnchor.constraint(equalTo: mark.topAnchor, constant: 1),
+            lookupBadge.widthAnchor.constraint(equalTo: mark.widthAnchor, multiplier: 0.53),
+            lookupBadge.heightAnchor.constraint(equalTo: mark.widthAnchor, multiplier: 0.42)
+        ])
         // The firefly sits at the lower-left corner of the compact launcher.
         indicatorLeading = updateIndicator.leadingAnchor.constraint(equalTo: mark.leadingAnchor, constant: -11.65)
         indicatorBottom = updateIndicator.bottomAnchor.constraint(equalTo: mark.bottomAnchor, constant: 11.65)
@@ -409,36 +420,28 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         setPhase(.collapsed, animate: false)
         screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self, self.panel.isVisible else { return }
-            self.setPhase(self.phase, animate: false)
+            self.setPhase(self.launcherPhase, animate: false)
         }
     }
     deinit { if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) } }
     func configureFloating(enabled: Bool, allSpaces: Bool, size: UnicornSize = .medium) {
         let sizeChanged = size != iconSize
-        if sizeChanged {
-            iconSize = size
-            markWidth.constant = 36 * size.scale
-            indicatorLeading.constant = -11.65 * size.scale
-            indicatorBottom.constant = 11.65 * size.scale
-            headingClearance.constant = -(compactSide - 12)
-            headingHeight.constant = max(24, compactSide - 24)
-        }
+        iconSize = size
         persistent = enabled
         panel.collectionBehavior = allSpaces ? [.canJoinAllSpaces, .fullScreenAuxiliary, .transient] : [.fullScreenAuxiliary, .transient]
         guard enabled else { hide(); return }
         if placement == nil, let saved = UserDefaults.standard.dictionary(forKey: "unicornAnchor"),
            let x = saved["x"] as? Double, let y = saved["y"] as? Double, x.isFinite, y.isFinite { placement = NSPoint(x: x, y: y) }
         if !panel.isVisible { showLauncher(clearSession: false) }
-        else if sizeChanged { setPhase(phase, animate: false) }
+        else if sizeChanged { setPhase(launcherPhase, animate: false) }
         if placement == nil { placement = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY) }
     }
     func moveAnchor(to point: NSPoint) {
         guard point.x.isFinite, point.y.isFinite else { return }
-        placement = point; setPhase(phase, animate: false)
+        placement = point; setPhase(launcherPhase, animate: false)
         placement = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
     }
     func beginPointerInteraction(at point: NSPoint) {
-        interruptedTransition = morph?.isAnimating == true
         morph?.stop(); morph = nil; morphRevision += 1
         hoverDelay?.cancel()
         mark.layer?.removeAnimation(forKey: "session-update")
@@ -455,7 +458,7 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
             onDragStart?(); overviewPresented = false
             stopLoading(); speech.hide(); hovering = false
             intro.title = session?.terminalTitle ?? "CCS · Your active work"
-            interruptedTransition = false
+            displayedMenu?.close()
             placement = anchor
             setPhase(.collapsed, animate: false, duringDrag: true)
             panel.resignKey()
@@ -483,7 +486,42 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
     func setUpdateCount(_ count: Int) {
         updateIndicator.isHidden = count == 0
         let help = count == 0 ? "Drag to move. Right-click for active sessions." : "\(count) session update\(count == 1 ? "" : "s"). Right-click to review."
-        mark.toolTip = help; mark.setAccessibilityHelp(help)
+        updateHelp = help; updateMarkHelp()
+    }
+    private func updateMarkHelp() {
+        let expanded = phase == .expanded
+        mark.setAccessibilityLabel(expanded ? "Close card" : (session?.terminalTitle ?? "CCS") + ". Click to open.")
+        mark.toolTip = lookupHelp ?? (expanded ? "Click to close. " + updateHelp : updateHelp)
+        mark.setAccessibilityHelp(mark.toolTip)
+    }
+    func setBrowserLookupIndicator(_ state: BrowserLookupIndicator) {
+        clearLookupBadge?.cancel(); clearLookupBadge = nil
+        lookupBadge.layer?.removeAnimation(forKey: "thinking")
+        let symbol: String
+        switch state {
+        case .hidden: symbol = ""; lookupHelp = nil
+        case .thinking: symbol = "ellipsis.bubble.fill"; lookupHelp = "Finding sessions for this page…"
+        case .noMatch: symbol = "minus.circle.fill"; lookupHelp = "No matching sessions"
+        case .unavailable(let message): symbol = "exclamationmark.bubble.fill"; lookupHelp = message
+        }
+        updateMarkHelp()
+        lookupBadge.isHidden = state == .hidden
+        guard state != .hidden else { return }
+        // Opaque bubble with a contrasting glyph stays legible over either wallpaper.
+        let palette = NSImage.SymbolConfiguration(paletteColors: [.windowBackgroundColor, .labelColor])
+        lookupBadge.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(palette)
+        if state == .thinking {
+            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                let pulse = CABasicAnimation(keyPath: "opacity")
+                pulse.fromValue = 1; pulse.toValue = 0.55; pulse.duration = 0.65
+                pulse.autoreverses = true; pulse.repeatCount = .infinity
+                lookupBadge.layer?.add(pulse, forKey: "thinking")
+            }
+        } else {
+            let clear = DispatchWorkItem { [weak self] in self?.setBrowserLookupIndicator(.hidden) }
+            clearLookupBadge = clear
+            DispatchQueue.main.asyncAfter(deadline: .now() + (state == .noMatch ? 1.3 : 3), execute: clear)
+        }
     }
     var canShowNotification: Bool { persistent && panel.isVisible && !drag.isTracking && !overviewPresented && phase != .expanded }
     func notify(_ update: SessionUpdate, bubble: Bool, wiggle: Bool, sound: Bool) {
@@ -499,6 +537,7 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         else { speech.hide() }
     }
     private func showLauncher(clearSession: Bool) {
+        displayedMenu?.close()
         stopLoading()
         if clearSession { session = nil; tab = nil }
         intro.title = session?.terminalTitle ?? "CCS · Your active work"
@@ -506,16 +545,49 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         setPhase(.collapsed, animate: false)
         panel.orderFrontRegardless()
     }
+    func presentMenu(_ menu: UnicornMenu) {
+        guard let content = menu.contentViewController?.view else { return }
+        if let old = displayedMenu, old !== menu { old.close() }
+        displayedMenu = menu
+        hoverDelay?.cancel(); hovering = false; speech.hide()
+        (panel as? Panel)?.acceptsKeyboard = true
+        // The menu has its own layout. Pin it at its natural size while the
+        // launcher's existing shape animation reveals the content.
+        content.translatesAutoresizingMaskIntoConstraints = true
+        content.autoresizingMask = []
+        content.frame = NSRect(origin: .zero, size: menu.contentSize)
+        surface.addSubview(content, positioned: .below, relativeTo: mark)
+        setPhase(.expanded)
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    func resizeMenu(_ menu: UnicornMenu) {
+        guard displayedMenu === menu else { return }
+        setPhase(.expanded, animate: false)
+    }
+
+    func dismissMenu(_ menu: UnicornMenu) {
+        guard displayedMenu === menu else { return }
+        displayedMenu = nil
+        menu.contentViewController?.view.removeFromSuperview()
+        (panel as? Panel)?.acceptsKeyboard = false
+        panel.resignKey()
+        setPhase(.collapsed)
+    }
+    func windowDidResignKey(_ notification: Notification) { displayedMenu?.close() }
+
     func showSessions() { onShowSessions?(prepareSessionMenu()) }
     func prepareSessionMenu() -> NSView {
+        filePopover.close()
         stopLoading(); speech.hide(); hovering = false
-        setPhase(.collapsed, animate: false)
+        if displayedMenu == nil { setPhase(.collapsed, animate: false) }
         overviewPresented = true
         return mark
     }
     func sessionOverviewClosed() { overviewPresented = false; hovering = false }
     func show(_ session: Session, tab: TerminalTabSnapshot) {
         terminalContextActive = true
+        if filePopover.isShown && (self.session?.key != session.key || self.tab?.paneID != tab.paneID) { filePopover.close() }
         self.session = session; self.tab = tab
         title.stringValue = session.terminalTitle
         folderButton.setFolder(session.cwd)
@@ -523,26 +595,31 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         detail.stringValue = [session.provider.title, session.status].filter { !$0.isEmpty }.joined(separator: " · ")
         intro.title = session.terminalTitle
         intro.toolTip = session.terminalTitle + "\n" + path.stringValue + "\nClick for files"
-        mark.setAccessibilityLabel(session.terminalTitle + ". Hover for name; click for files.")
-        guard !overviewPresented else { return }
+        updateMarkHelp()
+        guard !overviewPresented, displayedMenu == nil else { return }
         stopLoading()
         setPhase(.collapsed, animate: false)
         // Restore context without replaying the name or moving onto another Space.
         if !panel.isVisible && panel.isOnActiveSpace { panel.orderFrontRegardless() }
         hovering = false
     }
-    @objc private func toggleExpansion() { if phase == .expanded { collapse() } else { expand() } }
+    @objc private func toggleExpansion() {
+        guard phase == .expanded else { expand(); return }
+        if !persistent && filePopover.isShown { hide() } else { collapse() }
+    }
     @objc func expand() {
+        if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == BrowserReportPopover.chromeID, let onChromeReport {
+            onChromeReport(prepareSessionMenu()); return
+        }
         guard terminalContextActive, let session else { return }
         speech.hide()
-        let interruptingAnimation = morph?.isAnimating == true || interruptedTransition
-        interruptedTransition = false
-        hoverDelay?.cancel()
+        hoverDelay?.cancel(); hovering = false
         previousApplication = NSWorkspace.shared.frontmostApplication
-        needsFileFocus = true
+        setPhase(.collapsed, animate: false)
         artifactBrowser.show(folder: session.cwd, refresh: true)
-        setPhase(.expanded, animate: !interruptingAnimation)
-        panel.makeKeyAndOrderFront(nil)
+        resizeFiles()
+        filePopover.showFromUnicorn(mark)
+        artifactBrowser.focusSearch()
         artifactTimer?.invalidate()
         artifactTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             guard let self, self.phase == .expanded, self.panel.isVisible else { return }
@@ -552,42 +629,50 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
     func collapse(restoreFocus: Bool = true) {
         intro.title = session?.terminalTitle ?? "CCS · Your active work"
         intro.toolTip = "Click for files; right-click for active work"
-        let wasKey = panel.isKeyWindow
-        stopLoading(); setPhase(.collapsed)
-        panel.resignKey()
-        if wasKey, restoreFocus,
-           previousApplication?.processIdentifier != ProcessInfo.processInfo.processIdentifier {
-            previousApplication?.activate(options: [])
+        let previous = previousApplication
+        let wasKey = filePopover.contentViewController?.view.window?.isKeyWindow == true
+        if let menu = displayedMenu { menu.close() } else { setPhase(.collapsed) }
+        stopLoading()
+        if wasKey, restoreFocus, previous?.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            previous?.activate(options: [])
         }
         previousApplication = nil
     }
-    @objc private func closeCard() { if persistent { collapse() } else { hide() } }
     @objc private func browseFiles() {
         if let session {
             if persistent { collapse(restoreFocus: false) } else { hide() }
             onBrowseFiles?(session)
         }
     }
-    func windowDidResignKey(_ notification: Notification) {
-        if phase == .expanded { collapse(restoreFocus: false) }
+    private func resizeFiles() {
+        filePopover.contentSize = NSSize(width: 368, height: ceil(stack.fittingSize.height) + 20)
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { collapse(); return false }
     private func setPhase(_ value: Phase, animate: Bool = true, duringDrag: Bool = false) {
         guard !drag.isTracking || duringDrag else { return }
         morph?.stop(); morph = nil; morphRevision += 1
         let revision = morphRevision
-        phase = value
-        (panel as? Panel)?.acceptsKeyboard = value == .expanded
-        NSLayoutConstraint.deactivate(expandedConstraints + introConstraints + bubbleConstraints)
-        stack.isHidden = true; intro.isHidden = true; bubble.isHidden = true
-        stack.layoutSubtreeIfNeeded()
-        let size: NSSize = value == .expanded ? NSSize(width: 380, height: max(220, stack.fittingSize.height + 32)) : value == .title ? NSSize(width: 320, height: compactSide) : NSSize(width: compactSide, height: compactSide)
+        launcherPhase = value
+        updateMarkHelp()
+        NSLayoutConstraint.deactivate(introConstraints + bubbleConstraints)
+        intro.isHidden = true; bubble.isHidden = true
+        let size: NSSize
+        if value == .expanded, let menu = displayedMenu {
+            size = NSSize(width: menu.contentSize.width,
+                          height: max(compactSide, menu.contentSize.height))
+        } else {
+            size = NSSize(width: value == .title ? 320 : compactSide, height: compactSide)
+        }
         let startFrame = panel.frame, startRadius = cornerRadius, startMarkTop = markTop.constant
         // Give the compact circle equal padding around the unicorn while the firefly overhangs its rim.
         let startInset = surface.backgroundInset
-        let endInset = value == .collapsed ? compactSide - markWidth.constant - 2 * markInset : 0
-        let endRadius: CGFloat = value == .expanded ? 16 : (size.height - endInset) / 2
-        let endMarkTop = markInset
+        let startWidth = markWidth.constant
+        let endWidth = value == .expanded ? UnicornMenu.headerIconSize : 36 * iconSize.scale
+        let startOverhang = indicatorBottom.constant
+        let endOverhang: CGFloat = value == .expanded ? 3 : 11.65 * iconSize.scale
+        let endInset = value == .collapsed ? compactSide - endWidth - 2 * markInset : 0
+        let endRadius = value == .expanded ? 16 : (size.height - endInset) / 2
+        let endMarkTop: CGFloat = value == .expanded ? 8 : markInset
         var frame = panel.frame
         frame.origin.x += frame.width - size.width; frame.origin.y += frame.height - size.height; frame.size = size
         if placement == nil, let tab, let primary = NSScreen.screens.first {
@@ -605,7 +690,7 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         } else if tab == nil, let screen = NSScreen.main {
             frame.origin = NSPoint(x: screen.visibleFrame.maxX - size.width - 16, y: screen.visibleFrame.maxY - size.height - 50)
         }
-        var endMarkTrailing = -markInset
+        var endMarkTrailing = -endMarkTop
         let startMarkTrailing = markTrailing.constant
         let compact = NSRect(x: frame.maxX - compactSide, y: frame.maxY - compactSide, width: compactSide, height: compactSide)
         if let screen = NSScreen.screens.max(by: {
@@ -634,7 +719,15 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
             func blend(_ a: CGFloat, _ b: CGFloat) -> CGFloat { a + (b - a) * progress }
             let next = NSRect(x: blend(startFrame.minX, frame.minX), y: blend(startFrame.minY, frame.minY),
                               width: blend(startFrame.width, frame.width), height: blend(startFrame.height, frame.height))
+            if let menu = self.displayedMenu, let content = menu.contentViewController?.view {
+                content.frame = NSRect(x: 0, y: next.height - menu.contentSize.height,
+                                       width: menu.contentSize.width, height: menu.contentSize.height)
+                content.alphaValue = value == .expanded ? progress : 0
+            }
             self.surfaceWidth.constant = next.width; self.surfaceHeight.constant = next.height
+            self.markWidth.constant = blend(startWidth, endWidth)
+            self.indicatorBottom.constant = blend(startOverhang, endOverhang)
+            self.indicatorLeading.constant = -self.indicatorBottom.constant
             self.markTop.constant = blend(startMarkTop, endMarkTop)
             self.markTrailing.constant = blend(startMarkTrailing, endMarkTrailing)
             self.cornerRadius = blend(startRadius, endRadius)
@@ -642,12 +735,9 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
             self.panel.setFrame(next, display: true, animate: false)
             self.surface.layoutSubtreeIfNeeded()
             if progress >= 1 {
-                self.stack.isHidden = value != .expanded; self.intro.isHidden = value != .title; self.bubble.isHidden = value != .collapsed
-                NSLayoutConstraint.activate(value == .expanded ? self.expandedConstraints : value == .title ? self.introConstraints : self.bubbleConstraints)
+                self.intro.isHidden = value != .title; self.bubble.isHidden = value != .collapsed
+                if value != .expanded { NSLayoutConstraint.activate(value == .title ? self.introConstraints : self.bubbleConstraints) }
                 self.surface.layoutSubtreeIfNeeded()
-                if value == .expanded, self.needsFileFocus {
-                    self.needsFileFocus = false; self.artifactBrowser.focusSearch()
-                }
             }
         }
         if animate, panel.isVisible, frame != startFrame, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
@@ -677,6 +767,7 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         case .tabChanged:
             if persistent { showLauncher(clearSession: true) } else { hide() }
         case .spaceChanged:
+            displayedMenu?.close()
             // Collapse in place without replaying the title or changing Spaces.
             stopLoading(); hovering = false
             intro.title = session?.terminalTitle ?? "CCS · Your active work"
@@ -694,11 +785,12 @@ final class TerminalSessionPopup: NSObject, NSWindowDelegate {
         artifactTimer?.invalidate(); artifactTimer = nil; artifactBrowser.cancel()
     }
     func hide() {
-        drag.reset(); interruptedTransition = false
+        setBrowserLookupIndicator(.hidden)
+        displayedMenu?.close(); drag.reset()
         overviewPresented = false
         speech.hide(); terminalContextActive = false
         stopLoading(); hovering = false
-        morph?.stop(); morph = nil; morphRevision += 1; needsFileFocus = false
+        morph?.stop(); morph = nil; morphRevision += 1
         panel.orderOut(nil); previousApplication = nil
     }
 }

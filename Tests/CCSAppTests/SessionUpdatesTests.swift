@@ -143,10 +143,11 @@ final class SessionUpdatesTests: XCTestCase {
         popup.configureFloating(enabled: true, allSpaces: true)
         popup.showSessions()
         let frame = popup.panel.frame
+        XCTAssertTrue(menu.search.window === popup.panel)
         popup.setHovering(true)
         let target = target("new", "active")
         popup.show(target.session!, tab: target.tab)
-        XCTAssertEqual(popup.phase, .collapsed); XCTAssertEqual(popup.panel.frame, frame)
+        XCTAssertEqual(popup.phase, .expanded); XCTAssertEqual(popup.panel.frame, frame)
         popup.setHovering(false)
         let settled = expectation(description: "pointer left the unicorn for its menu")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { settled.fulfill() }

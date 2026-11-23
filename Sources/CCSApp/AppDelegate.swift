@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var dismissal: TransientUIDismissal?
     private let terminalPopup = TerminalSessionPopup()
     private let sessionOverview = SessionOverview()
+    private lazy var browserReports = BrowserReportPopover(engine: engine)
     private lazy var activity = SessionActivityCoordinator(load: { [weak self] providers, done in
         self?.engine.loadTerminalActivity(enabledProviders: providers, completion: done)
     }, remember: { [weak self] in self?.engine.rememberActivity($0) })
@@ -31,7 +32,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         popup = Popup(engine: engine, settings: settings)
         terminalPopup.onBrowseFiles = { [weak self] session in self?.popup.showFiles(for: session) }
         terminalPopup.onShowSessions = { [weak self] anchor in self?.showSessionOverview(anchor: anchor) }
-        terminalPopup.onDragStart = { [weak self] in self?.sessionOverview.close() }
+        terminalPopup.onChromeReport = { [weak self] anchor in
+            guard let self else { return }
+            if self.browserReports.isActive { self.browserReports.close(); return }
+            self.sessionOverview.close()
+            self.browserReports.show(anchor: anchor, recent: self.activity.recentSnapshot)
+        }
+        browserReports.onIndicator = { [weak self] in self?.terminalPopup.setBrowserLookupIndicator($0) }
+        browserReports.onClose = { [weak self] in self?.terminalPopup.sessionOverviewClosed() }
+        browserReports.onSelect = { [weak self] match, sessions in
+            guard let self else { return }
+            if let target = match.target { self.focus(target, sessions: sessions) }
+            else { self.popup.resumeFromReport(match.session) }
+        }
+        terminalPopup.onDragStart = { [weak self] in self?.sessionOverview.close(); self?.browserReports.close() }
         terminalPopup.onNotificationOpen = { [weak self] target in
             guard let self else { return }
             self.focus(target, sessions: self.activity.targets.compactMap(\.session))
@@ -161,7 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             terminalMonitor?.configure(enabled: value.terminalPopups)
             terminalPopup.configureFloating(enabled: value.terminalPopups, allSpaces: value.unicornAllSpaces, size: value.unicornSize)
             let reset = old.enabledProviders != value.enabledProviders || old.terminalPopups != value.terminalPopups
-            if reset { sessionOverview.close(); popup.updateFinished([]) }
+            if reset { sessionOverview.close(); browserReports.reset(); popup.updateFinished([]) }
             activity.configure(value)
             configureActivityEvents()
         } catch {
@@ -228,6 +242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshSessionOverview(generation: generation)
     }
     private func openSessionOverview(anchor: NSView) -> Int {
+        browserReports.close()
         popup.hide(restoreFocus: false)
         return sessionOverview.show(anchor: anchor, cached: activity.recentSnapshot, finished: activity.finished)
     }

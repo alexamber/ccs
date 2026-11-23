@@ -3,7 +3,7 @@ import CCSCore
 
 /// Opens immediately from recent state. Fresh status can replace an untouched
 /// list; once navigation starts, rows stay under the same pointer/selection.
-final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+final class SessionOverview: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
     private final class Table: NSTableView {
         var onOpen: (() -> Void)?, onClose: (() -> Void)?, onInteract: (() -> Void)?, onSearch: (() -> Void)?
         private var pointerArea: NSTrackingArea?
@@ -25,7 +25,7 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
             super.keyDown(with: event)
         }
     }
-    let popover = NSPopover()
+    let popover = UnicornMenu()
     private let table = Table(), scroll = NSScrollView()
     let search = NSSearchField()
     private let message = NSTextField(labelWithString: "Checking active sessions…")
@@ -48,6 +48,8 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
     private var interacted = false
     private var statusText = ""
     private var maximumListHeight: CGFloat = 408
+    private var headingWidth: NSLayoutConstraint!
+    private var headingHeight: NSLayoutConstraint!
     private var listHeight: NSLayoutConstraint!
     private(set) var generation = 0
     var onSelect: ((TerminalSwitchTarget, [Session]) -> Void)?, onBrowse: (() -> Void)?, onRefresh: (() -> Void)?
@@ -65,7 +67,7 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
             guard let self, self.isShown, let latest = self.latest else { return }
             self.updateList(latest)
         }
-        popover.behavior = .transient; popover.animates = false; popover.delegate = self
+        popover.onClose = { [weak self] in self?.menuClosed() }
         let controller = NSViewController(); controller.view = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 120))
         popover.contentViewController = controller
         heading.font = .systemFont(ofSize: 12, weight: .semibold)
@@ -103,12 +105,18 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
             stack.trailingAnchor.constraint(equalTo: controller.view.trailingAnchor, constant: -10),
             stack.topAnchor.constraint(equalTo: controller.view.topAnchor, constant: 10),
             stack.bottomAnchor.constraint(equalTo: controller.view.bottomAnchor, constant: -10)])
-        for view in [heading, search, message, scroll, footer] { view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
+        headingWidth = heading.widthAnchor.constraint(equalTo: stack.widthAnchor)
+        headingHeight = heading.heightAnchor.constraint(greaterThanOrEqualToConstant: 0)
+        NSLayoutConstraint.activate([headingWidth, headingHeight])
+        for view in [search, message, scroll, footer] { view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
     }
     @discardableResult func show(anchor: NSView, cached: TerminalActivitySnapshot? = nil, finished: Set<String> = []) -> Int {
         endSwitch(); keysByTTY = cached.flatMap { $0.context.targets.isEmpty ? nil : $0.context.keysByTTY }
         generation += 1; interacted = false; pending = nil; allTargets = []; targets = []; available = []; self.finished = finished
         search.stringValue = ""
+        let inCard = anchor.window?.delegate is TerminalSessionPopup
+        headingWidth.constant = inCard ? -UnicornMenu.headerClearance : 0
+        headingHeight.constant = inCard ? UnicornMenu.headerIconSize : 0
         maximumListHeight = min(408, max(102, (anchor.window?.screen?.visibleFrame.height ?? 700) - 210))
         latest = cached
         if let cached {
@@ -120,8 +128,7 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
         updateMessage()
         refreshButton.contentTintColor = .secondaryLabelColor
         resize()
-        NSApp.activate(ignoringOtherApps: true)
-        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+        popover.showFromUnicorn(anchor)
         popover.contentViewController?.view.window?.makeFirstResponder(search)
         return generation
     }
@@ -208,8 +215,8 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
         updateMessage()
         message.toolTip = error.localizedDescription
     }
-    func close() { endSwitch(); popover.performClose(nil) }
-    func popoverDidClose(_ notification: Notification) { drafts.clear(); endSwitch(); generation += 1; onClose?() }
+    func close() { endSwitch(); popover.close() }
+    private func menuClosed() { drafts.clear(); endSwitch(); generation += 1; onClose?() }
 
     func beginSwitch(step: Int, fromSelection: Bool = false, previous: NSRunningApplication? = nil,
                      optionHeld: @escaping () -> Bool = { NSEvent.modifierFlags.contains(.option) }) {
@@ -274,7 +281,7 @@ final class SessionOverview: NSObject, NSPopoverDelegate, NSTableViewDataSource,
     deinit { releaseTimer?.invalidate() }
     private func resize() {
         listHeight.constant = min(CGFloat(targets.count * 34), maximumListHeight)
-        popover.contentSize = NSSize(width: 400, height: 114 + listHeight.constant)
+        popover.contentSize = NSSize(width: 400, height: 114 + max(0, headingHeight.constant - heading.intrinsicContentSize.height) + listHeight.constant)
     }
     private func focusList() {
         if !targets.isEmpty { popover.contentViewController?.view.window?.makeFirstResponder(table) }

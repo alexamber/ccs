@@ -13,6 +13,14 @@ final class ClaudeActivityHookTests: XCTestCase {
         XCTAssertFalse(String(decoding: updated, as: UTF8.self).contains("/tmp/it"))
         XCTAssertTrue(String(decoding: updated, as: UTF8.self).contains("echo user-hook"))
     }
+    func testBackgroundAgentToolCompletionDoesNotMarkMainTurnActive() throws {
+        for event in ["PostToolUse", "PostToolUseFailure"] {
+            var input = ["session_id": "session", "hook_event_name": event, "agent_type": "reviewer"]
+            XCTAssertEqual(ClaudeActivityHook.payload(try JSONSerialization.data(withJSONObject: input))?["status"], "active")
+            input["agent_id"] = "subagent"
+            XCTAssertNil(ClaudeActivityHook.payload(try JSONSerialization.data(withJSONObject: input)))
+        }
+    }
     func testPayloadContainsOnlyActivityMetadataAndDistinguishesWaiting() throws {
         for (event, expected) in [("Stop", "idle"), ("PermissionRequest", "waiting_for_approval"), ("PreToolUse", "waiting_input"), ("UserPromptSubmit", "active")] {
             let input: [String: Any] = ["session_id": "session", "cwd": "/tmp", "hook_event_name": event, "tool_name": "AskUserQuestion",

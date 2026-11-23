@@ -5,6 +5,7 @@ public final class SessionService {
     public let runner: CommandRunner
     public let terminals: TerminalRegistry
     public let codex: CodexProvider
+    private let claudeSessionsDirectory: URL
     private let arguments: (Int32) -> [String]?
     private var terminalSnapshot: (sessions: [Session], providers: [Provider], date: Date)?
     public var cachedTerminalMetadata: (sessions: [Session], updatedAt: Date)? {
@@ -14,7 +15,9 @@ public final class SessionService {
     public private(set) var issues = [Provider: String]()
     public private(set) var historyFailures = Set<Provider>()
     public init(index: SessionIndex = SessionIndex(), runner: @escaping CommandRunner = ProcessRunner().command,
-                codex: CodexProvider = CodexProvider(), terminals: TerminalRegistry? = nil, arguments: @escaping (Int32) -> [String]? = ProcessArguments.read) {
+                codex: CodexProvider = CodexProvider(), terminals: TerminalRegistry? = nil, arguments: @escaping (Int32) -> [String]? = ProcessArguments.read,
+                environment: [String: String] = ProcessInfo.processInfo.environment) {
+        self.claudeSessionsDirectory = CCSPaths.claudeConfiguration(in: environment).appendingPathComponent("sessions")
         self.terminals = terminals ?? TerminalRegistry.system(runner: runner)
         self.index = index; self.runner = runner; self.codex = codex; self.arguments = arguments
     }
@@ -23,7 +26,23 @@ public final class SessionService {
         guard let result = try? runner("/usr/bin/env", ["claude", "agents", "--json"], nil, 15), result.code == 0,
               let records = try? JSONDecoder().decode([LiveSession].self, from: Data(result.out.utf8)),
               records.allSatisfy({ !$0.sessionId.isEmpty }) else { return nil }
-        return Dictionary(records.map { ($0.sessionId, $0) }, uniquingKeysWith: { _, new in new })
+        return Dictionary(records.map { ($0.sessionId, foregroundSession($0)) }, uniquingKeysWith: { _, new in new })
+    }
+
+    private func foregroundSession(_ listed: LiveSession) -> LiveSession {
+        // Claude 2.1.328 folds the presence record's shell-only state into "busy"
+        // in agents --json. Use the narrower signal only for the same live process.
+        if listed.status != "shell" {
+            guard listed.status == "busy", let pid = listed.pid, pid > 0, let start = listed.startedAt else { return listed }
+            let file = claudeSessionsDirectory.appendingPathComponent("\(pid).json")
+            guard let data = try? Data(contentsOf: file),
+                  let presence = try? JSONDecoder().decode(LiveSession.self, from: data),
+                  presence.sessionId == listed.sessionId, presence.pid == pid, presence.startedAt == start,
+                  presence.status == "shell" else { return listed }
+        }
+        var session = listed
+        session.status = "idle"
+        return session
     }
 
     public func collect(days: Int, provider: ProviderFilter = .claude, enabledProviders: [Provider] = Provider.allCases) throws -> [Session] {

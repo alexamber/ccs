@@ -18,7 +18,7 @@ final class ReportSearch {
 
     init(load: @escaping Loader) { self.load = load }
 
-    func search(_ sessions: [Session]) {
+    func search(_ sessions: [Session], delay: TimeInterval = 0.25) {
         let stamps = Dictionary(sessions.map { ($0.key, $0.mtime) }, uniquingKeysWith: max)
         guard stamps != scope else { return }
         // Let an in-flight pass finish when live activity changes a timestamp.
@@ -32,12 +32,20 @@ final class ReportSearch {
         ticket = operation
         let work = DispatchWorkItem { [weak self] in self?.next(operation) }
         scheduled = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     func matches(_ query: String, for session: Session) -> [ReportReference] {
         guard let entry = entries[session.key], entry.stamp == session.mtime else { return [] }
         return entry.files.filter { $0.matches(query) }
+    }
+
+    func reference(for session: Session, path: String?, name: String?) -> ReportReference? {
+        guard let entry = entries[session.key], entry.stamp == session.mtime else { return nil }
+        if let path { return entry.files.first { $0.path == path } }
+        guard let name else { return nil }
+        let suffix = "/" + name
+        return entry.files.first { $0.path.hasSuffix(suffix) }
     }
 
     func stop() {

@@ -13,7 +13,11 @@ public enum ClaudeActivityHook {
               let event = object["hook_event_name"] as? String else { return nil }
         let status: String
         switch event {
-        case "UserPromptSubmit", "PostToolUse", "PostToolUseFailure": status = "active"
+        case "UserPromptSubmit": status = "active"
+        case "PostToolUse", "PostToolUseFailure":
+            // A background subagent can finish a tool after the main turn has stopped.
+            guard (object["agent_id"] as? String)?.nonempty == nil else { return nil }
+            status = "active"
         case "Stop": status = "idle"
         case "StopFailure": status = "error"
         case "PermissionRequest": status = "waiting_for_approval"
@@ -25,9 +29,7 @@ public enum ClaudeActivityHook {
     }
 
     public static func configure(enabled: Bool, cli: String, environment: [String: String]) throws {
-        let home = environment["HOME"] ?? NSHomeDirectory()
-        let directory = environment["CLAUDE_CONFIG_DIR"].flatMap { $0.isEmpty ? nil : $0 } ?? home + "/.claude"
-        let url = URL(fileURLWithPath: directory).appendingPathComponent("settings.json").resolvingSymlinksInPath()
+        let url = CCSPaths.claudeConfiguration(in: environment).appendingPathComponent("settings.json").resolvingSymlinksInPath()
         let original = FileManager.default.fileExists(atPath: url.path) ? try Data(contentsOf: url) : nil
         if original == nil && !enabled { return }
         let updated = try configuration(original ?? Data("{}".utf8), enabled: enabled, cli: cli)

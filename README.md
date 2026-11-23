@@ -18,7 +18,7 @@ Requires macOS 14 or later, Terminal.app, and at least one installed command,
 
 ## Install
 
-Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v1.4.0/CCS-1.4.0-macos-universal.dmg),
+Download the [signed, notarized universal DMG](https://github.com/alexamber/ccs/releases/download/v1.5.0/CCS-1.5.0-macos-universal.dmg),
 drag CCS into Applications, and open it. Choose **Install Command-Line Tool** in
 the CCS menu to install the terminal picker too. Both Apple Silicon and Intel
 executables are included.
@@ -99,12 +99,19 @@ active work. Choose **Small**, **Medium** (default), or **Large** beside **Show 
 The unicorn and its notification firefly scale together. While Terminal is focused, hover over the compact icon to reveal the
 selected session's name; moving away collapses it. Tab switches and desktop changes
 do not announce names automatically. Click the icon or name to open files for that
-identified Terminal session, with its folder, provider, and status. Outside Terminal,
-hover shows no session name and left-click does nothing. The expanded selector
+identified Terminal session, with its folder, provider, and status. With Google Chrome
+in front, click the unicorn to find sessions for the selected local file or localhost
+page. A small thought bubble pulses while CCS looks. Matches open a compact list;
+an empty lookup briefly shows a minus above the unicorn. Allow Chrome Automation
+access when macOS asks. **Open in Terminal** focuses
+a verified tab and **Closed sessions** resumes saved work. **Serving this page**
+identifies an open session through the listener’s process ancestry, even at `/`.
+Local file URLs and recognized Python static-server routes match full report paths.
+For other local servers, filename hits are labeled **Possible match**. The expanded selector
 takes keyboard focus; clicking away, Escape, or opening a file collapses it.
 Moving the pointer away does not close a file selector opened by clicking.
-The unicorn stays visible during a smooth 180 ms size-and-corner transition.
-The expanded view fits up to five file rows, scrolling for more. The small bubble
+For Terminal files, Chrome report matches, and the right-click session switcher, the
+unicorn expands into a card. Click the unicorn again or press Escape to collapse it. The file list fits up to five rows, scrolling for more. The small bubble
 remains available across apps and, by default, all desktops. Turn off **Show on
 every desktop** to keep it on one Space. Drag the unicorn to move it; CCS remembers
 its position and keeps it within a connected display. A monochrome unicorn also

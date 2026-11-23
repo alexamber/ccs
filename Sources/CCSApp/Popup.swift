@@ -473,19 +473,31 @@ final class Popup: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableVie
     @objc func settingsClicked() { onSettings?() }
     func activateSelected(fresh: Bool) {
         guard let s = selected else { return }
+        confirmActivation(s, fresh: fresh, inPicker: true) { [weak self] fresh in self?.activate(s, fresh: fresh) }
+    }
+    func resumeFromReport(_ session: Session) {
+        confirmActivation(session, fresh: false, inPicker: false) { [weak self] fresh in
+            self?.engine.perform({ service, _ in try service.activate(session, fresh: fresh) }) {
+                if case .failure(let error) = $0 { showError(error) }
+            }
+        }
+    }
+    private func confirmActivation(_ s: Session, fresh: Bool, inPicker: Bool, activate: @escaping (Bool) -> Void) {
         if s.isLarge && !fresh {
             asking = true
             let alert = NSAlert(); alert.messageText = "Resume a large session?"
             alert.informativeText = "\(s.turns) prompts\(s.cost.map { " · $\(formattedCost($0)) recorded" } ?? ""). Resuming includes the saved conversation in future prompts. A clean session starts empty in \(shortPath(s.cwd))."
             alert.addButton(withTitle: "Resume"); alert.addButton(withTitle: "Start clean here"); alert.addButton(withTitle: "Cancel")
             alert.buttons.last?.keyEquivalent = "\u{1b}"
-            alert.beginSheetModal(for: panel) { [weak self] response in
+            let respond: (NSApplication.ModalResponse) -> Void = { [weak self] response in
                 guard let self else { return }; self.asking = false
-                if response == .alertFirstButtonReturn { self.activate(s, fresh: false) }
-                else if response == .alertSecondButtonReturn { self.activate(s, fresh: true) }
-                else { self.panel.makeFirstResponder(self.search) }
+                if response == .alertFirstButtonReturn { activate(false) }
+                else if response == .alertSecondButtonReturn { activate(true) }
+                else if inPicker { self.panel.makeFirstResponder(self.search) }
             }
-        } else { activate(s, fresh: fresh) }
+            if inPicker { alert.beginSheetModal(for: panel, completionHandler: respond) }
+            else { NSApp.activate(ignoringOtherApps: true); respond(alert.runModal()) }
+        } else { activate(fresh) }
     }
     func activate(_ s: Session, fresh: Bool) {
         let target = terminalTargets?[s.key], candidates = sessions

@@ -34,7 +34,7 @@ final class Engine {
     private var environment = [String: String]()
     init(environment: @escaping () -> [String: String] = ProcessRunner.loginEnvironment,
          makeService: @escaping ([String: String]) -> SessionService = {
-             SessionService(runner: ProcessRunner(environment: $0).command, codex: CodexProvider(environment: $0))
+             SessionService(runner: ProcessRunner(environment: $0).command, codex: CodexProvider(environment: $0), environment: $0)
          }) {
         self.makeService = makeService
         bootstrap.async { self.environment = environment() }

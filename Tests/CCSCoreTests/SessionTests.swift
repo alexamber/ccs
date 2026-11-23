@@ -39,6 +39,42 @@ final class SessionTests: XCTestCase {
         try FileManager.default.removeItem(at: file)
         XCTAssertTrue(try index.load().isEmpty)
     }
+    func testClaudeBackgroundShellAndForegroundWorkAcrossPolls() throws {
+        let config = try temporary(), directory = config.appendingPathComponent("sessions")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("42.json")
+        let identity: [String: Any] = ["sessionId": "abc", "pid": 42, "startedAt": 1234]
+        var listed = identity
+        listed["status"] = "busy"
+        let service = SessionService(runner: { _, _, _, _ in
+            CommandResult(out: String(decoding: try JSONSerialization.data(withJSONObject: [listed]), as: UTF8.self))
+        }, environment: ["CLAUDE_CONFIG_DIR": config.path])
+        func writePresence(_ status: String, changing fields: [String: Any] = [:]) throws {
+            var presence = identity.merging(fields) { _, new in new }
+            presence["status"] = status
+            try JSONSerialization.data(withJSONObject: presence).write(to: file)
+        }
+        func status() -> String? { service.liveSessions()?["abc"]?.status }
+
+        XCTAssertEqual(status(), "busy")
+        try writePresence("shell")
+        XCTAssertEqual(status(), "idle", "An already running server is ready on the first poll, even without hooks")
+        try writePresence("busy")
+        XCTAssertEqual(status(), "busy", "New foreground work is visible on the next poll")
+        try writePresence("shell")
+        XCTAssertEqual(status(), "idle")
+        listed["status"] = "waiting"
+        XCTAssertEqual(status(), "waiting")
+        listed["status"] = "busy"
+        for mismatch: [String: Any] in [["sessionId": "other"], ["pid": 43], ["startedAt": 1235]] {
+            try writePresence("shell", changing: mismatch)
+            XCTAssertEqual(status(), "busy")
+        }
+        try Data("{".utf8).write(to: file)
+        XCTAssertEqual(status(), "busy")
+        listed["status"] = "shell"
+        XCTAssertEqual(status(), "idle")
+    }
     func testMalformedLiveListsNeverAuthorizeResume() throws {
         for text in ["{}", "null", "[1]", "[{\"sessionId\":1}]", "[{\"sessionId\":\"\"}]"] {
             var launched = false

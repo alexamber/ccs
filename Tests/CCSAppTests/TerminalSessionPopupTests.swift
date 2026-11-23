@@ -194,13 +194,17 @@ final class TerminalSessionPopupTests: XCTestCase {
         popup.expand()
         XCTAssertEqual(popup.phase, .expanded)
         XCTAssertTrue(popup.panel.canBecomeKey)
+        XCTAssertTrue(popup.filePopover.isShown)
         let loaded = expectation(description: "file list loaded")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { loaded.fulfill() }
         wait(for: [loaded], timeout: 2)
         XCTAssertEqual(browser.files.count, 3)
         XCTAssertFalse(popup.panel.isMainWindow)
         XCTAssertTrue(popup.panel.isVisible)
-        XCTAssertLessThan(popup.panel.frame.height, 400, "The panel should fit three files without a large blank area")
+        XCTAssertLessThan(popup.filePopover.contentSize.height, 400, "The panel should fit three files without a large blank area")
+        XCTAssertEqual(popup.panel.frame.width, popup.filePopover.contentSize.width, accuracy: 1)
+        let filesFrame = browser.convert(browser.bounds, to: popup.panel.contentView)
+        XCTAssertEqual(filesFrame.minX, popup.panel.frame.width - filesFrame.maxX, accuracy: 1)
         try capture(popup, name: "terminal-popup")
         popup.contextEnded(.disabled)
         XCTAssertFalse(popup.panel.isVisible)
@@ -224,7 +228,8 @@ final class TerminalSessionPopupTests: XCTestCase {
         XCTAssertTrue(mark.acceptsFirstMouse(for: event))
         mark.performClick(nil)
         XCTAssertEqual(popup.phase, .expanded)
-        XCTAssertEqual(popup.panel.frame.width, 380, "An explicit click must not wait for the title animation to finish")
+        XCTAssertTrue(popup.artifactBrowser.window === popup.panel, "Files appear inside the launcher")
+        XCTAssertTrue(popup.filePopover.isShown)
         settle(); XCTAssertEqual(popup.phase, .expanded, "The old animation must not collapse the file menu later")
     }
 
@@ -240,31 +245,22 @@ final class TerminalSessionPopupTests: XCTestCase {
         XCTAssertEqual(popup.phase, .collapsed)
     }
 
-    func testInterruptedMorphFinishesAtLatestPhase() {
+    func testSwitchingFromFilesToSessionsKeepsTheSameAnchor() {
         _ = NSApplication.shared
-        let popup = TerminalSessionPopup(artifactBrowser: ArtifactBrowser(showLocation: false, visibleRowLimit: 5, loader: { _, done in done(ArtifactSnapshot()) }))
-        NSApp.activate(ignoringOtherApps: true)
+        let popup = TerminalSessionPopup(artifactBrowser: ArtifactBrowser(loader: { _, done in done(ArtifactSnapshot()) }))
         popup.configureFloating(enabled: true, allSpaces: true)
+        defer { popup.hide() }
         popup.show(Session(id: "a", cwd: "/tmp", title: "Small topic"), tab: tab(1))
-        popup.collapse(restoreFocus: false); settle()
+        let compact = popup.panel.frame
         popup.expand()
-        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            let halfway = expectation(description: "an intermediate frame before interrupting the expansion")
-            let observer = Timer(timeInterval: 0.005, repeats: true) { timer in
-                if popup.panel.frame.width > 56 && popup.panel.frame.width < 380 {
-                    timer.invalidate()
-                    halfway.fulfill()
-                }
-            }
-            RunLoop.main.add(observer, forMode: .common)
-            wait(for: [halfway], timeout: 1)
-            observer.invalidate()
-        }
-        popup.collapse(restoreFocus: false); settle()
-        XCTAssertEqual(popup.phase, .collapsed)
-        XCTAssertEqual(popup.panel.frame.width, 56)
-        XCTAssertFalse(popup.panel.canBecomeKey)
-        popup.hide()
+        XCTAssertTrue(popup.filePopover.isShown)
+        settle()
+        XCTAssertGreaterThan(popup.panel.frame.width, compact.width)
+        XCTAssertTrue(popup.artifactBrowser.window === popup.panel)
+        let anchor = popup.prepareSessionMenu()
+        XCTAssertFalse(popup.filePopover.isShown)
+        XCTAssertEqual(anchor.window, popup.panel)
+        XCTAssertEqual(popup.panel.frame, compact)
     }
 
     private func settle() {
@@ -302,7 +298,7 @@ final class TerminalSessionPopupTests: XCTestCase {
             try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
             let view = try XCTUnwrap(popup.panel.contentView)
             for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
-                popup.panel.appearance = NSAppearance(named: appearance)
+                view.appearance = NSAppearance(named: appearance)
                 view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
                 let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
                 view.cacheDisplay(in: view.bounds, to: bitmap)

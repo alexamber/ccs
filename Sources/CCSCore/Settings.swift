@@ -2,6 +2,11 @@ import Foundation
 
 public enum CCSPaths {
     public static var home: String { ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory() }
+    static func claudeConfiguration(in environment: [String: String]) -> URL {
+        let home = environment["HOME"] ?? NSHomeDirectory()
+        let directory = environment["CLAUDE_CONFIG_DIR"]?.nonempty ?? home + "/.claude"
+        return URL(fileURLWithPath: directory, isDirectory: true)
+    }
     public static var settings: URL {
         if let path = ProcessInfo.processInfo.environment["CCS_SETTINGS_PATH"] { return URL(fileURLWithPath: path) }
         return URL(fileURLWithPath: home).appendingPathComponent(".config/ccs/settings.json")
