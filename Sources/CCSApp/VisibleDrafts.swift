@@ -7,7 +7,11 @@ final class VisibleDrafts {
     private var revision = 0
     private var loading = false
     private let load: Loader
-    private var scope = [String: TerminalTabSnapshot]()
+    private struct TabIdentity: Equatable {
+        let tty: String
+        let title: String
+    }
+    private var scope = [String: TabIdentity]()
     private var lastCheck = Date.distantPast
     private(set) var keys = Set<String>()
     var onUpdate: (() -> Void)?
@@ -19,8 +23,12 @@ final class VisibleDrafts {
     }
     func check(_ targets: [TerminalSwitchTarget]) {
         let known = targets.filter { $0.session != nil && $0.tab.terminalID == "com.apple.Terminal" }
-        let next = Dictionary(known.map { ($0.key, $0.tab) }, uniquingKeysWith: { a, _ in a })
-        if scope != next { clear(); scope = next }
+        let next = Dictionary(known.map { ($0.key, TabIdentity(tty: $0.tab.tty, title: $0.tab.title)) },
+                              uniquingKeysWith: { a, _ in a })
+        if scope != next {
+            keys = keys.filter { next[$0] != nil && next[$0] == scope[$0] }
+            revision += 1; scope = next; loading = false; lastCheck = .distantPast
+        }
         guard !known.isEmpty, !loading, Date().timeIntervalSince(lastCheck) >= 3 else { return }
         loading = true; lastCheck = Date()
         let request = revision
